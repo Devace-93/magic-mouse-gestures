@@ -10,6 +10,7 @@ Out of the box:
 | 2-finger swipe left/right  | Switch workspace, animated and following your fingers         |
 | 2-finger pinch             | Native pinch zoom in apps that support it (browsers, viewers) |
 | 2-finger double tap        | Show the workspaces (`Super+W` on COSMIC, `Super` on GNOME)   |
+| 3-finger tap               | Show all applications (`Super+A` app library / app grid)      |
 | 1-finger scroll, clicks    | Unchanged (handled by the kernel `hid-magicmouse` driver)     |
 
 Extra taps and swipes (3 fingers, vertical swipes, ...) can be mapped to

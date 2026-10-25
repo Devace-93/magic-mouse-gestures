@@ -195,16 +195,24 @@ impl Default for Config {
             workspace_swipe: WorkspaceSwipe::default(),
             pinch: Pinch::default(),
             taps: Taps::default(),
-            gestures: vec![GestureRule {
-                kind: GestureKind::DoubleTap,
-                fingers: 2,
-                direction: None,
-                action: Action::Key {
-                    combo: default_overview_combo(),
+            gestures: vec![
+                GestureRule {
+                    kind: GestureKind::DoubleTap,
+                    fingers: 2,
+                    direction: None,
+                    action: Action::Key { combo: default_overview_combo() },
+                    app: None,
+                    enabled: true,
                 },
-                app: None,
-                enabled: true,
-            }],
+                GestureRule {
+                    kind: GestureKind::Tap,
+                    fingers: 3,
+                    direction: None,
+                    action: Action::Key { combo: default_app_grid_combo() },
+                    app: None,
+                    enabled: true,
+                },
+            ],
         }
     }
 }
@@ -220,6 +228,15 @@ fn default_overview_combo() -> String {
         d if d.contains("gnome") => "super".into(),
         d if d.contains("kde") => "super+w".into(),
         _ => "super+w".into(),
+    }
+}
+
+/// Keyboard shortcut that shows all installed applications (COSMIC App
+/// Library, GNOME app grid, KDE launcher).
+fn default_app_grid_combo() -> String {
+    match std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_ascii_lowercase().as_str() {
+        d if d.contains("kde") => "super".into(),
+        _ => "super+a".into(),
     }
 }
 
