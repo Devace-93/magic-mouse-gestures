@@ -34,7 +34,7 @@ DEFAULTS = {
         # compositor_natural_scroll absent = auto
     },
     "pinch": {"enabled": True, "fingers": 2, "sensitivity": 1.5, "activation_mm": 3.0},
-    "scroll": {"direction_debounce": True, "debounce_units": 120},
+    "scroll": {"direction_debounce": True, "debounce_units": 120, "mode": "notches", "speed": 1.0},
     "taps": {"tap_max_ms": 400, "tap_max_mm": 15.0, "tap_max_lift_speed": 80.0, "double_tap_ms": 500},
     "gesture": [
         {"kind": "double_tap", "fingers": 2, "enabled": True, "action": {"type": "key", "combo": "super+w"}},
@@ -333,6 +333,11 @@ class Window(Adw.ApplicationWindow):
                            lambda v: self._set("scroll", "direction_debounce", v)))
         grp.add(spin_row("Movement before scrolling starts", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late",
                          sc["debounce_units"], 12, 600, 12, 0, lambda v: self._set("scroll", "debounce_units", int(v))))
+        grp.add(combo_row("Mode", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals",
+                          [("notches", "Whole notches"), ("smooth", "Smooth steps")], sc.get("mode", "notches"),
+                          lambda v: self._set("scroll", "mode", v)))
+        grp.add(spin_row("Speed", "Multiplier on scroll distance", sc.get("speed", 1.0), 0.2, 4.0, 0.1, 1,
+                         lambda v: self._set("scroll", "speed", v)))
         page.add(grp)
 
         self.gest_group = Adw.PreferencesGroup(title="Gestures", description="Taps and quick swipes that trigger an action once, optionally only in one app.")
