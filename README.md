@@ -14,8 +14,8 @@ Out of the box:
 | 1-finger scroll, clicks    | Unchanged, except the backwards jump a scroll often starts with is filtered out |
 
 Extra taps and swipes (3 fingers, vertical swipes, ...) can be mapped to
-shortcuts, mouse buttons or commands in the config file, optionally only for
-a given application (e.g. 2-finger swipes = back/forward in the browser).
+shortcuts, mouse buttons or commands from the settings app, optionally only
+for a given application (e.g. 2-finger swipes = back/forward in the browser).
 
 ## How it works
 
@@ -55,7 +55,8 @@ KDE, niri, ...).
 ## Install
 
 Requirements: Rust toolchain (to build), `/dev/uinput` (standard), the
-`hid-magicmouse` kernel module (in-tree; a DKMS version also works).
+`hid-magicmouse` kernel module (in-tree; a DKMS version also works), and for
+the settings app `python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`.
 
 ```sh
 git clone https://github.com/Devace-93/magic-mouse-gestures
@@ -65,15 +66,30 @@ cd magic-mouse-gestures
 
 `install.sh` builds the binary, installs it to `/usr/local/bin`, adds a udev
 rule granting the logged-in user access to the mouse's input and hidraw nodes
-and to `/dev/uinput`, and enables a per-user systemd service. Remove everything with `./uninstall.sh`.
+and to `/dev/uinput`, installs the settings app, and enables a per-user systemd
+service. Remove everything with `./uninstall.sh`.
 
 If the Magic Mouse was paired before the udev rule was installed, unplug/re-
 pair it or run `sudo udevadm trigger` once.
 
 ## Configure
 
-The daemon writes a default `~/.config/magic-mouse-gestures/config.toml` on
-first start and reloads it whenever it changes.
+Run **Magic Mouse Gestures** from the app menu, or
+`magic-mouse-gestures-settings`. Settings are saved to
+`~/.config/magic-mouse-gestures/config.toml` and the daemon reloads them
+instantly.
+
+- **Direction** — *Natural* (macOS-like, swipe left = next workspace) or
+  *Inverted*. The daemon accounts for your desktop's touchpad natural-scroll
+  setting automatically.
+- **Sensitivity** — finger travel per workspace.
+- **Desktop gesture fingers** — 4 for COSMIC/KDE, 3 for GNOME.
+- **Pinch zoom** — on/off and zoom aggressiveness.
+- **Gestures** — add rows like *Tap · 3 fingers → Click middle* or
+  *Swipe · 2 fingers · right · only in firefox → alt+left*.
+
+The same options exist in the TOML file:
+
 
 - **Direction** — *Natural* (macOS-like, swipe left = next workspace) or
   *Inverted*. The daemon accounts for your desktop's touchpad natural-scroll
@@ -182,12 +198,14 @@ journalctl --user -fu magic-mouse-gestures
 ```sh
 cargo build --release
 ./target/release/magic-mouse-gestures -v run
+./ui/magic-mouse-gestures-settings
 ```
 
 Layout: `src/main.rs` (device discovery, event loop), `src/engine.rs`
 (gesture recognition), `src/hidraw.rs` (HID report decoding), `src/focus.rs`
 (focused-app tracking over Wayland), `src/virt.rs` (uinput devices),
-`src/config.rs`, `packaging/` (systemd unit, udev rule).
+`src/config.rs`, `ui/` (GTK4/libadwaita settings), `packaging/` (systemd unit,
+udev rule, desktop file).
 
 ## Related work
 

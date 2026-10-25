@@ -3,7 +3,8 @@
 set -euo pipefail
 PREFIX=${PREFIX:-/usr/local}
 systemctl --user disable --now magic-mouse-gestures.service 2>/dev/null || true
-sudo rm -f "$PREFIX/bin/magic-mouse-gestures" \
+sudo rm -f "$PREFIX/bin/magic-mouse-gestures" "$PREFIX/bin/magic-mouse-gestures-settings" \
+  "$PREFIX/share/applications/org.magicmouse.Gestures.desktop" \
   /etc/udev/rules.d/60-magic-mouse-gestures.rules /etc/modules-load.d/magic-mouse-gestures.conf \
   /etc/systemd/user/magic-mouse-gestures.service
 sudo udevadm control --reload-rules

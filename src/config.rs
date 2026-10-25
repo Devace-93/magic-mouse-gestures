@@ -326,7 +326,7 @@ pub fn to_toml(cfg: &Config) -> Result<String> {
     let body = toml::to_string_pretty(cfg)?;
     Ok(format!(
         "# magic-mouse-gestures configuration\n\
-         # Edit by hand; the daemon reloads it on save.\n\n{body}"
+         # Edit by hand or with `magic-mouse-gestures-settings`. The daemon reloads on save.\n\n{body}"
     ))
 }
 
