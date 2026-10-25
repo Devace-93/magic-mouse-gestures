@@ -33,6 +33,7 @@ DEFAULTS = {
         "axis": "horizontal",
         # compositor_natural_scroll absent = auto
     },
+    "pinch": {"enabled": True, "fingers": 2, "sensitivity": 1.5, "activation_mm": 3.0},
     "taps": {"tap_max_ms": 300, "tap_max_mm": 4.0, "double_tap_ms": 400},
     "gesture": [
         {"kind": "double_tap", "fingers": 2, "enabled": True, "action": {"type": "key", "combo": "super+w"}},
@@ -60,7 +61,7 @@ def load_config() -> dict:
             data = tomllib.load(f)
     except FileNotFoundError:
         return cfg
-    for section in ("general", "workspace_swipe", "taps"):
+    for section in ("general", "workspace_swipe", "pinch", "taps"):
         if isinstance(data.get(section), dict):
             cfg[section].update(data[section])
     if isinstance(data.get("gesture"), list):
@@ -83,7 +84,7 @@ def dump_config(cfg: dict) -> str:
         "# Edit by hand or with `magic-mouse-gestures-settings`. The daemon reloads on save.",
         "",
     ]
-    for section in ("general", "workspace_swipe", "taps"):
+    for section in ("general", "workspace_swipe", "pinch", "taps"):
         out.append(f"[{section}]")
         for k, v in cfg[section].items():
             if v is None:
@@ -96,6 +97,8 @@ def dump_config(cfg: dict) -> str:
         out.append(f"fingers = {int(g['fingers'])}")
         if g["kind"] == "swipe" and g.get("direction"):
             out.append(f"direction = {_toml_value(g['direction'])}")
+        if g.get("app"):
+            out.append(f"app = {_toml_value(g['app'])}")
         out.append(f"enabled = {_toml_value(bool(g.get('enabled', True)))}")
         out.append("")
         out.append("[gesture.action]")
@@ -129,6 +132,8 @@ def describe_gesture(g: dict) -> str:
     s = f"{kind} · {n} finger{'s' if n != 1 else ''}"
     if g["kind"] == "swipe" and g.get("direction"):
         s += f" · {g['direction']}"
+    if g.get("app"):
+        s += f" · only in {g['app']}"
     return s
 
 
@@ -206,6 +211,13 @@ class GestureDialog(Adw.Dialog):
         self.value_row.set_text(self._action_value())
         grp.add(self.value_row)
         page.add(grp)
+
+        grp = Adw.PreferencesGroup(title="Scope",
+                                   description="Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.")
+        self.app_row = Adw.EntryRow(title="Only in app")
+        self.app_row.set_text(self.g.get("app") or "")
+        grp.add(self.app_row)
+        page.add(grp)
         tb.set_content(page)
         self.set_child(tb)
 
@@ -233,6 +245,11 @@ class GestureDialog(Adw.Dialog):
         self.g["action"] = {"type": t, key: value}
         if self.g["kind"] != "swipe":
             self.g.pop("direction", None)
+        app = self.app_row.get_text().strip()
+        if app:
+            self.g["app"] = app
+        else:
+            self.g.pop("app", None)
         self.on_done(self.g)
         self.close()
 
@@ -266,8 +283,8 @@ class Window(Adw.ApplicationWindow):
         grp.add(combo_row("Desktop gesture fingers", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME",
                           [("4", "4 (COSMIC, KDE)"), ("3", "3 (GNOME)")], str(ws["synthetic_fingers"]),
                           lambda v: self._set("workspace_swipe", "synthetic_fingers", int(v))))
-        grp.add(combo_row("Axis", "Direction your desktop arranges workspaces in",
-                          [("horizontal", "Horizontal"), ("vertical", "Vertical")], ws["axis"],
+        grp.add(combo_row("Axis", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)",
+                          [("horizontal", "Horizontal"), ("vertical", "Vertical"), ("both", "Both")], ws["axis"],
                           lambda v: self._set("workspace_swipe", "axis", v)))
         cns = ws.get("compositor_natural_scroll")
         grp.add(combo_row("Desktop touchpad natural scrolling", "Leave on Auto unless the swipe goes the wrong way",
@@ -276,7 +293,16 @@ class Window(Adw.ApplicationWindow):
                           lambda v: self._set("workspace_swipe", "compositor_natural_scroll", None if v == "auto" else v == "true")))
         page.add(grp)
 
-        self.gest_group = Adw.PreferencesGroup(title="Gestures", description="Taps and quick swipes that trigger an action once.")
+        pz = self.cfg["pinch"]
+        grp = Adw.PreferencesGroup(title="Pinch zoom", description="Two fingers moving apart or together become the desktop's native pinch gesture.")
+        grp.add(switch_row("Enabled", None, pz["enabled"], lambda v: self._set("pinch", "enabled", v)))
+        grp.add(spin_row("Sensitivity", "1.0 = same zoom as a touchpad", pz["sensitivity"], 0.2, 4.0, 0.1, 1,
+                         lambda v: self._set("pinch", "sensitivity", v)))
+        grp.add(spin_row("Activation distance (mm)", "Change in finger distance before a pinch starts", pz["activation_mm"], 0.5, 15.0, 0.5, 1,
+                         lambda v: self._set("pinch", "activation_mm", v)))
+        page.add(grp)
+
+        self.gest_group = Adw.PreferencesGroup(title="Gestures", description="Taps and quick swipes that trigger an action once, optionally only in one app.")
         add = Gtk.Button(icon_name="list-add-symbolic", valign=Gtk.Align.CENTER, css_classes=["flat"])
         add.connect("clicked", lambda *_: self._edit_gesture(None))
         self.gest_group.set_header_suffix(add)
