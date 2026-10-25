@@ -47,6 +47,7 @@ Commands:
 Options:
   -c, --config PATH   Config file (default: ~/.config/magic-mouse-gestures/config.toml)
   -v, --verbose       Debug logging
+  -V, --version       Print the version
   -h, --help          Show this help";
 
 fn main() -> Result<()> {
@@ -61,6 +62,10 @@ fn main() -> Result<()> {
             "-v" | "--verbose" => verbose = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
+                return Ok(());
+            }
+            "-V" | "--version" => {
+                println!("magic-mouse-gestures {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
             other if other.starts_with('-') => anyhow::bail!("unknown option {other}\n{USAGE}"),

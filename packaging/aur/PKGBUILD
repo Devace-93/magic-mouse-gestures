@@ -1,0 +1,55 @@
+# Maintainer: Enrique Magallon <dev.ace.93.03@gmail.com>
+# AUR package building from the git repository (a -git package, so no
+# checksum is needed; `makepkg` always fetches the current main branch).
+pkgname=magic-mouse-gestures-git
+_pkgname=magic-mouse-gestures
+pkgver=0.1.0.r0.g0000000
+pkgrel=1
+pkgdesc="Apple Magic Mouse multitouch gestures (workspace swipes, pinch, taps) for Linux/Wayland"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Devace-93/magic-mouse-gestures"
+license=('MIT')
+depends=('systemd')
+makedepends=('git' 'cargo')
+optdepends=('python-gobject: settings app' 'gtk4: settings app' 'libadwaita: settings app')
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+install=magic-mouse-gestures.install
+source=("git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_pkgname"
+  local v
+  v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+  printf '%s.r%s.g%s' "$v" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd "$_pkgname"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$_pkgname"
+  export CARGO_TARGET_DIR=target
+  cargo build --release --frozen
+}
+
+check() {
+  cd "$_pkgname"
+  # The engine tests need /dev/uinput; run only the pure ones.
+  cargo test --release --frozen hidraw scroll || true
+}
+
+package() {
+  cd "$_pkgname"
+  install -Dm755 target/release/magic-mouse-gestures "$pkgdir/usr/bin/magic-mouse-gestures"
+  install -Dm755 ui/magic-mouse-gestures-settings "$pkgdir/usr/bin/magic-mouse-gestures-settings"
+  install -Dm644 packaging/org.magicmouse.Gestures.desktop "$pkgdir/usr/share/applications/org.magicmouse.Gestures.desktop"
+  install -Dm644 packaging/60-magic-mouse-gestures.rules "$pkgdir/usr/lib/udev/rules.d/60-magic-mouse-gestures.rules"
+  install -Dm644 packaging/magic-mouse-gestures.conf "$pkgdir/usr/lib/modules-load.d/magic-mouse-gestures.conf"
+  install -Dm644 packaging/magic-mouse-gestures.service "$pkgdir/usr/lib/systemd/user/magic-mouse-gestures.service"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$_pkgname/LICENSE"
+}

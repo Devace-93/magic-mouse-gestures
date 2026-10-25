@@ -5,7 +5,7 @@ Documentation=https://github.com/Devace-93/magic-mouse-gestures
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/magic-mouse-gestures run
+ExecStart=/usr/bin/env magic-mouse-gestures run
 Restart=on-failure
 RestartSec=2
 Nice=-5

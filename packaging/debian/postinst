@@ -1,0 +1,28 @@
+#!/bin/sh
+# Post-install for magic-mouse-gestures: load uinput, apply the udev rule and
+# enable the per-user service for everyone (it starts at next login). For the
+# users logged in right now, try to start it immediately.
+set -e
+case "$1" in
+    configure)
+        modprobe uinput 2>/dev/null || true
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload-rules || true
+            udevadm trigger --subsystem-match=input --subsystem-match=misc || true
+        fi
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl --global enable magic-mouse-gestures.service >/dev/null 2>&1 || true
+            if command -v loginctl >/dev/null 2>&1; then
+                for user in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $2}'); do
+                    systemctl --user --machine="${user}@.host" daemon-reload >/dev/null 2>&1 || true
+                    systemctl --user --machine="${user}@.host" start magic-mouse-gestures.service >/dev/null 2>&1 || true
+                done
+            fi
+        fi
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications || true
+        fi
+        ;;
+esac
+#DEBHELPER#
+exit 0

@@ -21,7 +21,7 @@ sudo install -Dm755 ui/magic-mouse-gestures-settings "$PREFIX/bin/magic-mouse-ge
 sudo install -Dm644 packaging/org.magicmouse.Gestures.desktop "$PREFIX/share/applications/org.magicmouse.Gestures.desktop"
 sudo install -Dm644 packaging/60-magic-mouse-gestures.rules /etc/udev/rules.d/60-magic-mouse-gestures.rules
 sudo install -Dm644 packaging/magic-mouse-gestures.conf /etc/modules-load.d/magic-mouse-gestures.conf
-sudo sed "s|/usr/local/bin|$PREFIX/bin|" packaging/magic-mouse-gestures.service | sudo tee /etc/systemd/user/magic-mouse-gestures.service >/dev/null
+sudo install -Dm644 packaging/magic-mouse-gestures.service /etc/systemd/user/magic-mouse-gestures.service
 sudo modprobe uinput || true
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=input --subsystem-match=misc

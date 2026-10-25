@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked
+      - name: Make /dev/uinput usable (the engine tests create virtual devices)
+        run: |
+          sudo modprobe uinput
+          sudo chmod 666 /dev/uinput
+      - name: Test
+        run: cargo test --locked
+      - name: Settings app parses
+        run: python3 -m py_compile ui/magic-mouse-gestures-settings
+      - name: Installer script is valid shell
+        run: |
+          sh -n get.sh
+          bash -n install.sh
+          bash -n uninstall.sh

@@ -54,9 +54,35 @@ KDE, niri, ...).
 
 ## Install
 
-Requirements: Rust toolchain (to build), `/dev/uinput` (standard), the
-`hid-magicmouse` kernel module (in-tree; a DKMS version also works), and for
-the settings app `python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`.
+Requirements: `/dev/uinput` (standard), the `hid-magicmouse` kernel module
+(in-tree; the DKMS version also works), systemd. The settings app also needs
+`python3-gi`, GTK 4 and libadwaita (`python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`
+on Debian/Ubuntu/Pop!_OS).
+
+**One line, any distro** (picks the `.deb`/`.rpm` or the static binary, verifies
+the checksum, needs sudo):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Devace-93/magic-mouse-gestures/main/get.sh | sh
+```
+
+**Packages** from the [releases page](https://github.com/Devace-93/magic-mouse-gestures/releases):
+
+| Distro | Command |
+|---|---|
+| Debian, Ubuntu, Pop!_OS | `sudo apt install ./magic-mouse-gestures_<version>_amd64.deb` (or `_arm64`) |
+| Fedora, openSUSE | `sudo dnf install ./magic-mouse-gestures-<version>.x86_64.rpm` |
+| Arch | AUR: `yay -S magic-mouse-gestures-git` |
+| Homebrew on Linux | `brew install Devace-93/tap/magic-mouse-gestures`, then follow the printed caveats for the udev rule |
+| NixOS / Nix | `nix profile install github:Devace-93/magic-mouse-gestures`, or import `nixosModules.default` and set `services.magic-mouse-gestures.enable = true` |
+| Rust toolchain | `cargo install magic-mouse-gestures` (binary only; install the udev rule from `packaging/` by hand) |
+| Any, static tarball | `magic-mouse-gestures-<version>-<arch>-linux.tar.gz` contains the binary, the settings app and the files `get.sh` installs |
+
+The `.deb` and `.rpm` enable the per-user service for everyone and start it
+for users logged in at install time; other methods print the
+`systemctl --user enable --now magic-mouse-gestures` step.
+
+**From source:**
 
 ```sh
 git clone https://github.com/Devace-93/magic-mouse-gestures
