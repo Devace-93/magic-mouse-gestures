@@ -1,0 +1,7 @@
+# magic-mouse-gestures: let the logged-in user open the Magic Mouse's input
+# and raw HID nodes, and create virtual devices through uinput.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="*Magic Mouse*", TAG+="uaccess"
+# Raw HID reports carry the multitouch data (Bluetooth 0005 / USB 0003, Apple 004C, Magic Mouse 2 0269, Magic Mouse 030D).
+SUBSYSTEM=="hidraw", KERNELS=="000[35]:004C:0269.*", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNELS=="000[35]:004C:030D.*", TAG+="uaccess"
