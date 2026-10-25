@@ -346,6 +346,7 @@ impl Engine {
         let now = Instant::now();
         let (n, c) = self.centroid_mm();
         let travel = self.max_travel_mm();
+        let prev_n = self.finger_count;
         self.finger_count = n;
         for t in self.slots.iter_mut().flatten() {
             t.fresh = false;
@@ -368,15 +369,24 @@ impl Engine {
                 }
                 let taps = self.cfg.read().unwrap().taps.clone();
                 let dur = now.duration_since(s.start);
-                let is_tap = !s.gestured
-                    && !s.clicked
-                    && dur <= Duration::from_millis(taps.tap_max_ms)
-                    && self.last_travel <= taps.tap_max_mm
-                    && self.last_speed <= taps.tap_max_lift_speed;
+                let reason = if s.gestured {
+                    Some("a gesture ran")
+                } else if s.clicked {
+                    Some("button pressed")
+                } else if dur > Duration::from_millis(taps.tap_max_ms) {
+                    Some("too long")
+                } else if self.last_travel > taps.tap_max_mm {
+                    Some("moved too far")
+                } else if self.last_speed > taps.tap_max_lift_speed {
+                    Some("lifted while moving")
+                } else {
+                    None
+                };
+                let is_tap = reason.is_none();
                 log::debug!(
                     "touch ended: {} finger(s), {} ms, travel {:.1} mm, lift speed {:.0} mm/s -> {}",
                     s.max_fingers, dur.as_millis(), self.last_travel, self.last_speed,
-                    if is_tap { "tap" } else { "not a tap" }
+                    reason.map_or("tap".to_string(), |r| format!("not a tap ({r})"))
                 );
                 if is_tap {
                     self.register_tap(s.max_fingers, now, Duration::from_millis(taps.double_tap_ms))?;
@@ -391,6 +401,13 @@ impl Engine {
         // Lift speed: displacement between this frame and the most recent
         // sample at least 20 ms older (two reports), so a single noisy frame
         // cannot decide. A tapping finger has settled by now; a flick has not.
+        // When the finger count changes the centroid jumps to wherever the
+        // remaining fingers are; that jump is not motion, so the history is
+        // restarted and the speed measured before the change is kept until
+        // enough new samples exist.
+        if n != prev_n {
+            self.history.clear();
+        }
         self.history.push_back((now, c));
         while self.history.len() > 1 && now.duration_since(self.history[0].0) > Duration::from_millis(100) {
             self.history.pop_front();
@@ -686,6 +703,26 @@ mod tests {
             e.handle(ev).unwrap();
         }
         assert!(e.last_tap.is_none(), "a click must not register as a tap");
+    }
+
+    #[test]
+    fn staggered_lift_is_still_a_tap() {
+        // Two resting fingers; one leaves 10 ms before the other. The centroid
+        // jumps half the finger distance at that moment, which must not be
+        // read as lift speed.
+        let mut e = engine();
+        e.set_hidraw_mode(true);
+        let both = [RawTouch { id: 1, x: -300, y: 0, down: true }, RawTouch { id: 2, x: 300, y: 0, down: true }];
+        let one = [RawTouch { id: 1, x: -300, y: 0, down: true }];
+        e.handle_touch_frame(&both).unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        e.handle_touch_frame(&both).unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        e.handle_touch_frame(&one).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        e.handle_touch_frame(&[]).unwrap();
+        assert!(e.last_speed <= 80.0, "lift speed {} mm/s came from the centroid jump", e.last_speed);
+        assert_eq!(e.last_tap.map(|(f, _)| f), Some(2), "should register a 2-finger tap");
     }
 
     #[test]

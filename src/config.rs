@@ -156,10 +156,10 @@ pub struct Taps {
 impl Default for Taps {
     fn default() -> Self {
         Self {
-            tap_max_ms: 300,
+            tap_max_ms: 400,
             tap_max_mm: 15.0,
             tap_max_lift_speed: 80.0,
-            double_tap_ms: 400,
+            double_tap_ms: 500,
         }
     }
 }
