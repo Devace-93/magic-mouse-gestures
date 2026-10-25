@@ -37,6 +37,7 @@ DEFAULTS = {
     "taps": {"tap_max_ms": 300, "tap_max_mm": 4.0, "double_tap_ms": 400},
     "gesture": [
         {"kind": "double_tap", "fingers": 2, "enabled": True, "action": {"type": "key", "combo": "super+w"}},
+        {"kind": "tap", "fingers": 3, "enabled": True, "action": {"type": "key", "combo": "super+a"}},
     ],
 }
 
