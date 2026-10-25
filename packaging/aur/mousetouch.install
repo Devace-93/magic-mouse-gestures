@@ -2,14 +2,14 @@ post_install() {
   modprobe uinput 2>/dev/null || true
   udevadm control --reload-rules 2>/dev/null || true
   udevadm trigger --subsystem-match=input --subsystem-match=misc 2>/dev/null || true
-  echo ">> Enable the daemon for your user:  systemctl --user enable --now magic-mouse-gestures"
+  echo ">> Enable the daemon for your user:  systemctl --user enable --now mousetouch"
 }
 
 post_upgrade() {
   udevadm control --reload-rules 2>/dev/null || true
-  echo ">> Restart the daemon:  systemctl --user restart magic-mouse-gestures"
+  echo ">> Restart the daemon:  systemctl --user restart mousetouch"
 }
 
 pre_remove() {
-  echo ">> Stop the daemon first if it is running:  systemctl --user disable --now magic-mouse-gestures"
+  echo ">> Stop the daemon first if it is running:  systemctl --user disable --now mousetouch"
 }

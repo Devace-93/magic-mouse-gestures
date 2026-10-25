@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MouseTouch — Magic Mouse gestures for Linux</title>
+<meta name="description" content="MouseTouch is a small userspace driver that gives the Apple Magic Mouse native-feeling multitouch gestures on Linux/Wayland: workspace swipes, pinch zoom, taps, and a GTK settings app.">
+<meta property="og:title" content="MouseTouch — Magic Mouse gestures for Linux">
+<meta property="og:description" content="Workspace swipes, pinch zoom and configurable taps for the Apple Magic Mouse on Linux/Wayland. One-line install, .deb/.rpm, AUR, Homebrew, Nix, crates.io.">
+<meta property="og:url" content="https://mouse.3m4.net/">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='14' y='4' width='36' height='56' rx='18' fill='%23e8e8ec' stroke='%23303036' stroke-width='3'/%3E%3Cpath d='M22 30c4-6 16-6 20 0M24 40c3-4 13-4 16 0' stroke='%231f7aec' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #fafafb;
+    --bg-elev: #ffffff;
+    --fg: #17171c;
+    --fg-muted: #5c5c68;
+    --line: #e3e3e9;
+    --accent: #1f6fe0;
+    --accent-fg: #ffffff;
+    --code-bg: #15161b;
+    --code-fg: #e9e9ef;
+    --ok: #1d9a5b;
+    --max: 1040px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1014;
+      --bg-elev: #17181e;
+      --fg: #ececf1;
+      --fg-muted: #a0a0ad;
+      --line: #2a2b33;
+      --accent: #5b9bff;
+      --accent-fg: #0b1220;
+      --code-bg: #07080b;
+      --code-fg: #e7e7ee;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1014; --bg-elev: #17181e; --fg: #ececf1; --fg-muted: #a0a0ad;
+    --line: #2a2b33; --accent: #5b9bff; --accent-fg: #0b1220;
+    --code-bg: #07080b; --code-fg: #e7e7ee;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Cantarell, "Noto Sans", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 16px; }
+  header.top {
+    position: sticky; top: 0; z-index: 10; backdrop-filter: blur(10px);
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    border-bottom: 1px solid var(--line);
+  }
+  header.top .wrap { display: flex; align-items: center; gap: 20px; height: 56px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--fg); }
+  .brand svg { width: 26px; height: 26px; }
+  nav { margin-left: auto; display: flex; gap: 18px; font-size: 14px; }
+  nav a { color: var(--fg-muted); }
+  nav a:hover { color: var(--fg); text-decoration: none; }
+  @media (max-width: 640px) { nav .hide-sm { display: none; } }
+
+  .hero { padding: 72px 0 40px; }
+  .hero h1 { font-size: clamp(32px, 5.5vw, 54px); line-height: 1.08; margin: 0 0 16px; letter-spacing: -0.02em; }
+  .hero h1 span { color: var(--accent); }
+  .hero p.lead { font-size: 19px; color: var(--fg-muted); max-width: 640px; margin: 0 0 28px; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; padding: 11px 18px; border-radius: 10px;
+    font-weight: 600; border: 1px solid var(--line); background: var(--bg-elev); color: var(--fg);
+  }
+  .btn:hover { text-decoration: none; border-color: var(--fg-muted); }
+  .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .pills { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 22px; }
+  .pill { font-size: 13px; color: var(--fg-muted); border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px; background: var(--bg-elev); }
+
+  section { padding: 44px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 26px; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .sub { color: var(--fg-muted); margin: 0 0 24px; max-width: 680px; }
+  h3 { font-size: 18px; margin: 28px 0 10px; }
+
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+  .card { background: var(--bg-elev); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+  .card .g { font-size: 13px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+  .card .r { font-weight: 600; }
+  .card .n { color: var(--fg-muted); font-size: 14px; margin-top: 4px; }
+
+  pre {
+    position: relative; margin: 0; background: var(--code-bg); color: var(--code-fg);
+    border-radius: 12px; padding: 14px 52px 14px 16px; overflow-x: auto;
+    font: 13.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  pre + pre, .step + .step { margin-top: 10px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+  p code, li code, td code { background: color-mix(in srgb, var(--fg) 8%, transparent); padding: 1px 5px; border-radius: 5px; font-size: 0.92em; }
+  .copy {
+    position: absolute; top: 8px; right: 8px; font: 12px system-ui, sans-serif; cursor: pointer;
+    background: rgba(255,255,255,.08); color: var(--code-fg); border: 1px solid rgba(255,255,255,.14);
+    border-radius: 7px; padding: 4px 9px;
+  }
+  .copy:hover { background: rgba(255,255,255,.16); }
+  .copy.done { color: #7ee2a8; border-color: #7ee2a8; }
+
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 18px 0 12px; }
+  .tab {
+    border: 1px solid var(--line); background: var(--bg-elev); color: var(--fg-muted);
+    border-radius: 999px; padding: 6px 13px; font-size: 14px; cursor: pointer; font-family: inherit;
+  }
+  .tab[aria-selected="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .panel { display: none; }
+  .panel[data-active] { display: block; }
+  .panel p { margin: 8px 0 10px; color: var(--fg-muted); font-size: 15px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { text-align: left; padding: 10px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--fg-muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; }
+  .tbl { overflow-x: auto; }
+
+  .two { display: grid; gap: 28px; grid-template-columns: 1.15fr 1fr; align-items: start; }
+  @media (max-width: 760px) { .two { grid-template-columns: 1fr; } }
+  ol.steps { padding-left: 20px; margin: 0; }
+  ol.steps li { margin-bottom: 10px; }
+  ul.plain { padding-left: 20px; margin: 0; }
+  ul.plain li { margin-bottom: 6px; }
+
+  .note { border-left: 3px solid var(--accent); padding: 8px 14px; background: var(--bg-elev); border-radius: 0 10px 10px 0; color: var(--fg-muted); font-size: 15px; margin-top: 16px; }
+
+  footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--fg-muted); font-size: 14px; }
+  footer p { margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><rect x="14" y="4" width="36" height="56" rx="18" fill="none" stroke="currentColor" stroke-width="4"/><path d="M22 30c4-6 16-6 20 0M24 40c3-4 13-4 16 0" stroke="var(--accent)" stroke-width="4" fill="none" stroke-linecap="round"/></svg>
+      MouseTouch
+    </a>
+    <nav>
+      <a href="#gestures" class="hide-sm">Gestures</a>
+      <a href="#install">Install</a>
+      <a href="#settings" class="hide-sm">Settings app</a>
+      <a href="#help" class="hide-sm">Help</a>
+      <a href="https://github.com/Devace-93/mousetouch">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <h1>Multitouch gestures for the Magic Mouse<br><span>on Linux.</span></h1>
+    <p class="lead">
+      MouseTouch is a small userspace driver that reads the finger positions the Apple Magic Mouse already
+      reports and replays them as touchpad gestures your desktop understands. Workspace swipes with the native
+      animation, pinch zoom, configurable taps, and a GTK settings app. Nothing patched in the kernel or compositor.
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="#install">Install</a>
+      <a class="btn" href="https://github.com/Devace-93/mousetouch">Source on GitHub</a>
+      <a class="btn" href="https://github.com/Devace-93/mousetouch/releases">Releases</a>
+    </div>
+    <div class="pills">
+      <span class="pill">Wayland</span>
+      <span class="pill">COSMIC · GNOME · KDE · niri · Sway · Hyprland</span>
+      <span class="pill">Rust daemon</span>
+      <span class="pill">GTK4 / libadwaita settings</span>
+      <span class="pill">MIT</span>
+    </div>
+  </div>
+
+  <section id="gestures">
+    <div class="wrap">
+      <h2>Out of the box</h2>
+      <p class="sub">Defaults you get right after installing. Every tap and swipe can be remapped to a shortcut, a mouse button or a command, globally or per application.</p>
+      <div class="grid">
+        <div class="card"><div class="g">2 fingers · swipe left/right</div><div class="r">Switch workspace</div><div class="n">Animated, follows your fingers, settles with release velocity.</div></div>
+        <div class="card"><div class="g">2 fingers · pinch</div><div class="r">Native pinch zoom</div><div class="n">In apps that support it: browsers, image and document viewers.</div></div>
+        <div class="card"><div class="g">2 fingers · double tap</div><div class="r">Show workspaces</div><div class="n"><code>Super+W</code> on COSMIC, <code>Super</code> on GNOME.</div></div>
+        <div class="card"><div class="g">3 fingers · tap</div><div class="r">Show all applications</div><div class="n">App library / app grid (<code>Super+A</code>).</div></div>
+        <div class="card"><div class="g">1 finger · scroll &amp; clicks</div><div class="r">Unchanged, but cleaner</div><div class="n">The backwards jump a scroll often starts with is filtered out.</div></div>
+        <div class="card"><div class="g">Per application</div><div class="r">Scoped rules</div><div class="n">E.g. 2-finger swipes = back/forward in the browser only.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <h2>Install</h2>
+      <p class="sub">
+        Every method below installs <strong>both parts</strong>: the <code>mousetouch</code> driver (a per-user systemd service)
+        and the <code>mousetouch-settings</code> app. The settings app is optional and needs GTK 4, libadwaita and PyGObject from your distribution.
+      </p>
+
+      <h3>One line, any distro</h3>
+      <p class="sub" style="margin-bottom:10px">Picks the newest release, verifies the checksum, installs the <code>.deb</code> or <code>.rpm</code> where there is one and the static binary elsewhere. Needs sudo.</p>
+      <pre><code>curl -fsSL https://raw.githubusercontent.com/Devace-93/mousetouch/main/get.sh | sh</code></pre>
+
+      <h3>Packages</h3>
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" aria-selected="true" data-tab="deb">Debian · Ubuntu · Pop!_OS</button>
+        <button class="tab" role="tab" data-tab="rpm">Fedora · openSUSE</button>
+        <button class="tab" role="tab" data-tab="arch">Arch (AUR)</button>
+        <button class="tab" role="tab" data-tab="brew">Homebrew</button>
+        <button class="tab" role="tab" data-tab="nix">NixOS / Nix</button>
+        <button class="tab" role="tab" data-tab="cargo">crates.io</button>
+        <button class="tab" role="tab" data-tab="tar">Static tarball</button>
+        <button class="tab" role="tab" data-tab="src">From source</button>
+      </div>
+
+      <div class="panel" data-tab="deb" data-active>
+        <p>Download the <code>.deb</code> for your architecture from the <a href="https://github.com/Devace-93/mousetouch/releases">releases page</a> (<code>amd64</code> or <code>arm64</code>). It enables the user service for everyone and starts it for logged-in users. The settings app's GTK dependencies come in as Recommends.</p>
+        <pre><code>sudo apt install ./mousetouch_&lt;version&gt;_amd64.deb</code></pre>
+      </div>
+      <div class="panel" data-tab="rpm">
+        <p>Download the <code>.rpm</code> from the <a href="https://github.com/Devace-93/mousetouch/releases">releases page</a>. Enables and starts the user service like the <code>.deb</code>.</p>
+        <pre><code>sudo dnf install ./mousetouch-&lt;version&gt;.x86_64.rpm</code></pre>
+        <p>Settings app dependencies on Fedora: <code>python3-gobject gtk4 libadwaita</code>.</p>
+      </div>
+      <div class="panel" data-tab="arch">
+        <p>Builds from the <code>main</code> branch. Settings app dependencies are optional: <code>python-gobject gtk4 libadwaita</code>.</p>
+        <pre><code>yay -S mousetouch-git
+systemctl --user enable --now mousetouch</code></pre>
+      </div>
+      <div class="panel" data-tab="brew">
+        <p>Homebrew on Linux. The formula ships the binaries; follow the printed caveats to install the udev rule once (needs sudo), then start the service.</p>
+        <pre><code>brew install Devace-93/tap/mousetouch
+brew services start mousetouch</code></pre>
+      </div>
+      <div class="panel" data-tab="nix">
+        <p>Imperative install into your profile:</p>
+        <pre><code>nix profile install github:Devace-93/mousetouch</code></pre>
+        <p>Or declaratively on NixOS, which also loads <code>uinput</code>, installs the udev rule and the user service:</p>
+        <pre><code># flake.nix inputs
+mousetouch.url = "github:Devace-93/mousetouch";
+
+# configuration.nix
+imports = [ mousetouch.nixosModules.default ];
+services.mousetouch.enable = true;</code></pre>
+      </div>
+      <div class="panel" data-tab="cargo">
+        <p>Binary only. Install the udev rule, modules-load file and user service from <code>packaging/</code> in the repository by hand afterwards.</p>
+        <pre><code>cargo install mousetouch</code></pre>
+      </div>
+      <div class="panel" data-tab="tar">
+        <p><code>mousetouch-&lt;version&gt;-&lt;arch&gt;-linux.tar.gz</code> from the <a href="https://github.com/Devace-93/mousetouch/releases">releases page</a> contains the static binary, the settings app and the udev/systemd/desktop files. Or let the installer do exactly that:</p>
+        <pre><code>curl -fsSL https://raw.githubusercontent.com/Devace-93/mousetouch/main/get.sh | MOUSETOUCH_FORCE_TARBALL=1 sh</code></pre>
+      </div>
+      <div class="panel" data-tab="src">
+        <p>Needs a Rust toolchain. <code>install.sh</code> builds the release binary, installs it to <code>/usr/local</code> with the udev rule, modules-load file, desktop entry and settings app, and enables the per-user service.</p>
+        <pre><code>git clone https://github.com/Devace-93/mousetouch
+cd mousetouch
+./install.sh</code></pre>
+        <p>Remove it again with <code>./uninstall.sh</code> (<code>--purge</code> also deletes the config).</p>
+      </div>
+
+      <div class="two" style="margin-top:28px">
+        <div>
+          <h3 style="margin-top:0">Requirements</h3>
+          <ul class="plain">
+            <li>A Magic Mouse connected over <strong>Bluetooth</strong> (the cable only charges on Linux), bound to the in-tree <code>hid-magicmouse</code> module. The DKMS build works too.</li>
+            <li><code>/dev/uinput</code> (standard) and systemd for the per-user service.</li>
+            <li>A Wayland compositor with libinput touchpad gestures: COSMIC, GNOME, KDE, niri, Sway, Hyprland, …</li>
+            <li>For the settings app: Python 3, PyGObject, GTK 4, libadwaita (<code>python3-gi gir1.2-gtk-4.0 gir1.2-adw-1</code> on Debian/Ubuntu/Pop!_OS).</li>
+          </ul>
+        </div>
+        <div>
+          <h3 style="margin-top:0">After installing</h3>
+          <ol class="steps">
+            <li>If the mouse was already paired, re-pair it or run <code>sudo udevadm trigger</code> so the udev rule applies.</li>
+            <li>Check the daemon: <code>systemctl --user status mousetouch</code>.</li>
+            <li>Swipe left/right with two fingers. Done.</li>
+          </ol>
+          <div class="note">Methods that do not run a package hook (tarball, Homebrew, cargo) print the one-off <code>systemctl --user enable --now mousetouch</code> step.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="settings">
+    <div class="wrap">
+      <div class="two">
+        <div>
+          <h2>Settings app</h2>
+          <p class="sub">A GTK4 / libadwaita app, installed alongside the driver by every method above. Launch <strong>MouseTouch</strong> from the app menu or run it from a terminal:</p>
+          <pre><code>mousetouch-settings</code></pre>
+          <p class="sub" style="margin-top:18px">It edits <code>~/.config/mousetouch/config.toml</code>, which the daemon reloads on save. No restart needed.</p>
+        </div>
+        <div>
+          <h3 style="margin-top:0">What you can change</h3>
+          <ul class="plain">
+            <li>Workspace swipe: direction, sensitivity, 3 or 4 synthetic fingers, horizontal or both axes (GNOME).</li>
+            <li>Pinch zoom on/off and aggressiveness.</li>
+            <li>One-finger scroll: notches vs smooth, speed, start-direction filter.</li>
+            <li>Tap timing and lift-speed detection.</li>
+            <li>Rules: tap / double tap / swipe × fingers → key combo, mouse button, command, toggle or cycle, optionally only for one application.</li>
+          </ul>
+          <div class="note">Prefer a text editor? The config file is plain TOML with comments. See the <a href="https://github.com/Devace-93/mousetouch#configure">configuration reference</a>.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <h2>How it works</h2>
+      <p class="sub">The Magic Mouse reports every finger on its surface, but desktops ignore that because the device is a <em>mouse</em>. MouseTouch bridges the gap in userspace.</p>
+      <div class="grid">
+        <div class="card"><div class="g">1</div><div class="r">Grab &amp; re-emit</div><div class="n">Takes the mouse's evdev node and re-emits motion, buttons and wheel through a virtual mouse, so everything keeps working.</div></div>
+        <div class="card"><div class="g">2</div><div class="r">Decode fingers</div><div class="n">Reads finger positions from the raw HID reports (<code>/dev/hidrawN</code>), with an evdev multitouch fallback.</div></div>
+        <div class="card"><div class="g">3</div><div class="r">Replay as a touchpad</div><div class="n">Two fingers sideways become a 4-finger touchpad swipe; spreading fingers become a pinch. The compositor runs its own animation.</div></div>
+        <div class="card"><div class="g">4</div><div class="r">Fire actions</div><div class="n">Taps and discrete swipes trigger keys, buttons or commands, optionally scoped to the focused app.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="help">
+    <div class="wrap">
+      <h2>Troubleshooting</h2>
+      <pre><code>mousetouch probe                 # is the mouse seen, with touch axes?
+mousetouch watch                 # live finger positions
+mousetouch demo-swipe left 40    # replay a synthetic 4-finger swipe
+journalctl --user -fu mousetouch</code></pre>
+      <div class="tbl" style="margin-top:18px">
+        <table>
+          <tr><th>Symptom</th><th>Check</th></tr>
+          <tr><td>No device found</td><td>Mouse must be on Bluetooth and bound to <code>hid-magicmouse</code>.</td></tr>
+          <tr><td>Swipe goes the wrong way</td><td>Flip <em>Direction</em> in the settings app, or set touchpad natural scrolling explicitly.</td></tr>
+          <tr><td>Nothing happens on swipe</td><td>The desktop must handle 4-finger (or 3-finger) touchpad swipes and not disable touchpads while a mouse is connected.</td></tr>
+          <tr><td>Permission denied</td><td>Make sure the udev rule is installed, or add yourself to the <code>input</code> group.</td></tr>
+          <tr><td><code>app</code> rules never fire</td><td>Run with <code>-v</code> and look for "focus tracking via". GNOME exposes no toplevel protocol, so app rules never match there.</td></tr>
+        </table>
+      </div>
+      <p class="sub" style="margin-top:18px">More in the <a href="https://github.com/Devace-93/mousetouch#troubleshooting">README</a>, or open an <a href="https://github.com/Devace-93/mousetouch/issues">issue</a>.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p><strong>MouseTouch</strong> · MIT licensed · <a href="https://github.com/Devace-93/mousetouch">github.com/Devace-93/mousetouch</a></p>
+    <p>MouseTouch is an independent open-source project. It is not affiliated with, endorsed by or sponsored by Apple Inc. "Magic Mouse" is a trademark of Apple Inc., used here only to describe the hardware this driver works with.</p>
+  </div>
+</footer>
+
+<script>
+  // Tabs
+  const tabs = document.querySelectorAll('.tab');
+  const panels = document.querySelectorAll('.panel');
+  function show(name) {
+    tabs.forEach(t => t.setAttribute('aria-selected', t.dataset.tab === name ? 'true' : 'false'));
+    panels.forEach(p => { if (p.dataset.tab === name) p.setAttribute('data-active', ''); else p.removeAttribute('data-active'); });
+    try { localStorage.setItem('mousetouch-tab', name); } catch (e) {}
+  }
+  tabs.forEach(t => t.addEventListener('click', () => show(t.dataset.tab)));
+  try { const saved = localStorage.getItem('mousetouch-tab'); if (saved && document.querySelector(`.tab[data-tab="${saved}"]`)) show(saved); } catch (e) {}
+
+  // Copy buttons
+  document.querySelectorAll('pre').forEach(pre => {
+    const b = document.createElement('button');
+    b.className = 'copy'; b.type = 'button'; b.textContent = 'Copy';
+    b.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(pre.querySelector('code').innerText);
+        b.textContent = 'Copied'; b.classList.add('done');
+        setTimeout(() => { b.textContent = 'Copy'; b.classList.remove('done'); }, 1500);
+      } catch (e) { b.textContent = 'Select & copy'; }
+    });
+    pre.appendChild(b);
+  });
+</script>
+</body>
+</html>

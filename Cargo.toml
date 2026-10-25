@@ -1,11 +1,11 @@
 [package]
-name = "magic-mouse-gestures"
+name = "mousetouch"
 version = "0.1.0"
 edition = "2021"
 description = "Apple Magic Mouse multitouch gestures (workspace swipes, pinch, taps) for Linux/Wayland"
 license = "MIT"
-repository = "https://github.com/Devace-93/magic-mouse-gestures"
-homepage = "https://github.com/Devace-93/magic-mouse-gestures"
+repository = "https://github.com/Devace-93/mousetouch"
+homepage = "https://mouse.3m4.net"
 readme = "README.md"
 keywords = ["magic-mouse", "gestures", "wayland", "evdev", "uinput"]
 categories = ["hardware-support", "os::linux-apis"]
@@ -47,30 +47,30 @@ depends = "udev, systemd"
 recommends = "python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1"
 maintainer-scripts = "packaging/debian/"
 assets = [
-    ["target/release/magic-mouse-gestures", "usr/bin/", "755"],
-    ["ui/magic-mouse-gestures-settings", "usr/bin/", "755"],
-    ["packaging/org.magicmouse.Gestures.desktop", "usr/share/applications/", "644"],
-    ["packaging/60-magic-mouse-gestures.rules", "usr/lib/udev/rules.d/", "644"],
-    ["packaging/magic-mouse-gestures.conf", "usr/lib/modules-load.d/", "644"],
-    ["packaging/magic-mouse-gestures.service", "usr/lib/systemd/user/", "644"],
-    ["README.md", "usr/share/doc/magic-mouse-gestures/", "644"],
+    ["target/release/mousetouch", "usr/bin/", "755"],
+    ["ui/mousetouch-settings", "usr/bin/", "755"],
+    ["packaging/net.3m4.MouseTouch.desktop", "usr/share/applications/", "644"],
+    ["packaging/60-mousetouch.rules", "usr/lib/udev/rules.d/", "644"],
+    ["packaging/mousetouch.conf", "usr/lib/modules-load.d/", "644"],
+    ["packaging/mousetouch.service", "usr/lib/systemd/user/", "644"],
+    ["README.md", "usr/share/doc/mousetouch/", "644"],
 ]
 
 # `cargo generate-rpm` (Fedora/openSUSE package from the same binary).
 [package.metadata.generate-rpm]
 summary = "Apple Magic Mouse multitouch gestures for Linux/Wayland"
 license = "MIT"
-url = "https://github.com/Devace-93/magic-mouse-gestures"
-post_install_script = "udevadm control --reload-rules || true; udevadm trigger --subsystem-match=input --subsystem-match=misc || true; modprobe uinput || true; systemctl --global enable magic-mouse-gestures.service || true"
-pre_uninstall_script = "if [ $1 -eq 0 ]; then systemctl --global disable magic-mouse-gestures.service || true; fi"
+url = "https://github.com/Devace-93/mousetouch"
+post_install_script = "udevadm control --reload-rules || true; udevadm trigger --subsystem-match=input --subsystem-match=misc || true; modprobe uinput || true; systemctl --global enable mousetouch.service || true"
+pre_uninstall_script = "if [ $1 -eq 0 ]; then systemctl --global disable mousetouch.service || true; fi"
 assets = [
-    { source = "target/release/magic-mouse-gestures", dest = "/usr/bin/magic-mouse-gestures", mode = "755" },
-    { source = "ui/magic-mouse-gestures-settings", dest = "/usr/bin/magic-mouse-gestures-settings", mode = "755" },
-    { source = "packaging/org.magicmouse.Gestures.desktop", dest = "/usr/share/applications/org.magicmouse.Gestures.desktop", mode = "644" },
-    { source = "packaging/60-magic-mouse-gestures.rules", dest = "/usr/lib/udev/rules.d/60-magic-mouse-gestures.rules", mode = "644" },
-    { source = "packaging/magic-mouse-gestures.conf", dest = "/usr/lib/modules-load.d/magic-mouse-gestures.conf", mode = "644" },
-    { source = "packaging/magic-mouse-gestures.service", dest = "/usr/lib/systemd/user/magic-mouse-gestures.service", mode = "644" },
-    { source = "README.md", dest = "/usr/share/doc/magic-mouse-gestures/README.md", mode = "644", doc = true },
+    { source = "target/release/mousetouch", dest = "/usr/bin/mousetouch", mode = "755" },
+    { source = "ui/mousetouch-settings", dest = "/usr/bin/mousetouch-settings", mode = "755" },
+    { source = "packaging/net.3m4.MouseTouch.desktop", dest = "/usr/share/applications/net.3m4.MouseTouch.desktop", mode = "644" },
+    { source = "packaging/60-mousetouch.rules", dest = "/usr/lib/udev/rules.d/60-mousetouch.rules", mode = "644" },
+    { source = "packaging/mousetouch.conf", dest = "/usr/lib/modules-load.d/mousetouch.conf", mode = "644" },
+    { source = "packaging/mousetouch.service", dest = "/usr/lib/systemd/user/mousetouch.service", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/mousetouch/README.md", mode = "644", doc = true },
 ]
 [package.metadata.generate-rpm.requires]
 systemd = "*"
