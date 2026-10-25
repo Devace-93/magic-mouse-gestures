@@ -121,6 +121,34 @@ Layout: `src/main.rs` (device discovery, event loop), `src/engine.rs`
 (gesture recognition), `src/hidraw.rs` (HID report decoding), `src/virt.rs`
 (uinput devices), `src/config.rs`, `packaging/` (systemd unit, udev rule).
 
+## Related work
+
+Other people have attacked the same problem; worth a look to compare approaches:
+
+- [Salacfrantisek/magic-mouse-wayland-gestures](https://github.com/Salacfrantisek/magic-mouse-wayland-gestures)
+  independently uses the same idea (hidraw in, gesture-only virtual touchpad
+  out) for GNOME, and adds one-finger scroll shaping and two-finger pinch zoom.
+- [brenoperucchi/magic-mouse-gestures](https://github.com/brenoperucchi/magic-mouse-gestures)
+  reads hidraw and maps two-finger swipes to keystrokes (`wtype`).
+- [isomoes/mouse-gesture](https://github.com/isomoes/mouse-gesture) is a Rust
+  evdev recognizer for the USB-C model with `xdotool` actions (X11).
+- [entrope/linux-magicmouse](https://github.com/entrope/linux-magicmouse) is the
+  origin of the `hid-magicmouse` kernel driver.
+
+What this project adds on top: compositor-native, finger-following animation
+that is not tied to GNOME (configurable 3/4 synthetic fingers), a
+driver-independent hidraw decoder with an evdev fallback, a generic rule engine
+(tap / double tap / swipe x N fingers -> key, button or command), hot-reloaded
+configuration and a settings UI.
+
+## Ideas / roadmap
+
+- Pinch zoom: replay a two-finger spread as two synthetic contacts moving
+  apart, so the compositor's native pinch gesture fires (as Salacfrantisek's
+  project does).
+- Per-application rules (e.g. two-finger swipe = back/forward in browsers).
+- Vertical two-finger swipe for the overview on desktops that support it.
+
 ## License
 
 MIT
