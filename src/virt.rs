@@ -326,8 +326,19 @@ impl VirtualKeyboard {
         Ok(Self { dev })
     }
 
-    /// Press and release a combination such as "super+w" or "ctrl+alt+right".
-    pub fn tap_combo(&mut self, combo: &str) -> Result<()> {
+    /// Press and release each comma-separated combination in turn, e.g.
+    /// "super+w" or "ctrl+equal,ctrl+equal".
+    pub fn tap_combo(&mut self, combos: &str) -> Result<()> {
+        for (i, combo) in combos.split(',').map(str::trim).filter(|c| !c.is_empty()).enumerate() {
+            if i > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+            self.tap_one(combo)?;
+        }
+        Ok(())
+    }
+
+    fn tap_one(&mut self, combo: &str) -> Result<()> {
         let codes = parse_combo(combo)?;
         let mut press: Vec<InputEvent> = codes.iter().map(|c| key(*c, 1)).collect();
         press.push(SYN_REPORT());

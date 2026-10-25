@@ -8,6 +8,7 @@ use crate::hidraw::RawTouch;
 use crate::virt::{VirtualKeyboard, VirtualMouse, VirtualTouchpad};
 use anyhow::Result;
 use evdev::{AbsoluteAxisCode, EventType, InputEvent, RelativeAxisCode};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -74,6 +75,8 @@ struct Session {
     swipe: SwipeState,
     /// True once any continuous or discrete swipe ran in this session.
     gestured: bool,
+    /// A physical button was pressed while fingers were down: not a tap.
+    clicked: bool,
 }
 
 struct PendingTap {
@@ -106,6 +109,8 @@ pub struct Engine {
     /// When true, touch data comes from `handle_touch_frame` (hidraw) and
     /// evdev ABS events are ignored.
     hidraw_mode: bool,
+    /// State of `Action::Toggle` rules, keyed by rule and focused app.
+    toggles: HashMap<String, bool>,
 }
 
 impl Engine {
@@ -136,6 +141,7 @@ impl Engine {
             focus,
             last_travel: 0.0,
             hidraw_mode: false,
+            toggles: HashMap::new(),
         }
     }
 
@@ -205,7 +211,15 @@ impl Engine {
                 }
                 self.mouse.push(ev);
             }
-            EventType::KEY => self.mouse.push(ev),
+            EventType::KEY => {
+                // BTN_* press while touching: the touch is a click, not a tap.
+                if ev.value() == 1 && (0x100..0x160).contains(&ev.code()) {
+                    if let Some(s) = &mut self.session {
+                        s.clicked = true;
+                    }
+                }
+                self.mouse.push(ev)
+            }
             EventType::SYNCHRONIZATION => {
                 if ev.code() == 0 {
                     // SYN_REPORT: end of frame.
@@ -325,7 +339,7 @@ impl Engine {
                 }
                 let taps = self.cfg.read().unwrap().taps.clone();
                 let dur = now.duration_since(s.start);
-                if !s.gestured && dur <= Duration::from_millis(taps.tap_max_ms) && self.last_travel <= taps.tap_max_mm {
+                if !s.gestured && !s.clicked && dur <= Duration::from_millis(taps.tap_max_ms) && self.last_travel <= taps.tap_max_mm {
                     self.register_tap(s.max_fingers, now, Duration::from_millis(taps.double_tap_ms))?;
                 }
             }
@@ -345,6 +359,7 @@ impl Engine {
                 last_centroid: c,
                 swipe: SwipeState::Armed,
                 gestured: false,
+                clicked: false,
             },
             Some(s) => s,
         };
@@ -491,15 +506,24 @@ impl Engine {
         };
         let Some((action, app)) = action else { return Ok(false) };
         log::info!("gesture {kind:?} {fingers}f {dir:?} app={app:?} -> {action:?}");
-        self.run_action(&action)?;
+        let toggle_key = format!("{kind:?}/{fingers}/{dir:?}/{app:?}@{focused}");
+        self.run_action(&action, &toggle_key)?;
         Ok(true)
     }
 
-    fn run_action(&mut self, action: &Action) -> Result<()> {
+    fn run_action(&mut self, action: &Action, toggle_key: &str) -> Result<()> {
         match action {
             Action::Key { combo } => {
                 if let Err(e) = self.shared.lock().unwrap().keyboard.tap_combo(combo) {
                     log::error!("key action '{combo}': {e}");
+                }
+            }
+            Action::Toggle { on, off } => {
+                let state = self.toggles.entry(toggle_key.to_string()).or_insert(false);
+                *state = !*state;
+                let combo = if *state { on } else { off };
+                if let Err(e) = self.shared.lock().unwrap().keyboard.tap_combo(combo) {
+                    log::error!("toggle action '{combo}': {e}");
                 }
             }
             Action::Button { button } => {
@@ -567,6 +591,27 @@ mod tests {
         let ax = AxisInfo { min: -1100, max: 1258, res: 26.0 };
         let ay = AxisInfo { min: -1589, max: 2047, res: 70.0 };
         Engine::new(cfg, shared, mouse, ax, ay, false, Arc::new(Mutex::new(None)))
+    }
+
+    #[test]
+    fn click_during_touch_is_not_a_tap() {
+        let mut e = engine();
+        for ev in [
+            abs(AbsoluteAxisCode::ABS_MT_SLOT, 0),
+            abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID, 1),
+            abs(AbsoluteAxisCode::ABS_MT_POSITION_X, 0),
+            abs(AbsoluteAxisCode::ABS_MT_POSITION_Y, 0),
+            syn(),
+            InputEvent::new(EventType::KEY.0, 0x110, 1), // BTN_LEFT down
+            syn(),
+            InputEvent::new(EventType::KEY.0, 0x110, 0),
+            syn(),
+            abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID, -1),
+            syn(),
+        ] {
+            e.handle(ev).unwrap();
+        }
+        assert!(e.last_tap.is_none(), "a click must not register as a tap");
     }
 
     #[test]

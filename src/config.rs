@@ -157,8 +157,12 @@ pub enum SwipeDir {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Action {
-    /// Key combination, e.g. "super+w", "ctrl+alt+right".
+    /// Key combination, e.g. "super+w", "ctrl+alt+right". Several combos
+    /// separated by commas are pressed in sequence ("ctrl+equal,ctrl+equal").
     Key { combo: String },
+    /// Alternate between two key sequences, remembered per focused app:
+    /// first trigger sends `on`, the next one `off`. Used for smart zoom.
+    Toggle { on: String, off: String },
     /// Mouse button click: "left", "right" or "middle".
     Button { button: String },
     /// Shell command, run with `sh -c`.
@@ -209,6 +213,17 @@ impl Default for Config {
                     fingers: 3,
                     direction: None,
                     action: Action::Key { combo: default_app_grid_combo() },
+                    app: None,
+                    enabled: true,
+                },
+                // macOS "smart zoom": one-finger double tap zooms the content
+                // in, the next one restores it. Ctrl+= / Ctrl+0 are understood
+                // by browsers, editors, viewers and most GTK/Qt apps.
+                GestureRule {
+                    kind: GestureKind::DoubleTap,
+                    fingers: 1,
+                    direction: None,
+                    action: Action::Toggle { on: "ctrl+equal,ctrl+equal,ctrl+equal".into(), off: "ctrl+0".into() },
                     app: None,
                     enabled: true,
                 },
