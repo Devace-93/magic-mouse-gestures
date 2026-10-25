@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use config::Config;
 use engine::{AxisInfo, Engine, Shared};
 use evdev::{AbsoluteAxisCode, Device};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
@@ -41,7 +41,7 @@ Commands:
                       e.g. key ctrl+kpplus  or  key 'ctrl+equal,ctrl+equal'
   fake-mouse [WHAT]   Create a fake Magic Mouse via uinput and play gestures
                       through it (testing). WHAT = all (swipe, pinch, 2-finger
-                      double tap) or double-tap-1
+                      double tap) or double-tap-1 [N times]
 
 Options:
   -c, --config PATH   Config file (default: ~/.config/magic-mouse-gestures/config.toml)
@@ -78,7 +78,10 @@ fn main() -> Result<()> {
         "probe" => probe(&config_path, false),
         "watch" => probe(&config_path, true),
         "demo-swipe" => demo_swipe(&rest),
-        "fake-mouse" => fake_mouse(rest.first().map(String::as_str).unwrap_or("all")),
+        "fake-mouse" => fake_mouse(
+            rest.first().map(String::as_str).unwrap_or("all"),
+            rest.get(1).and_then(|s| s.parse().ok()).unwrap_or(1),
+        ),
         "key" => {
             let combo = rest.first().context("key needs a combo, e.g. ctrl+kpplus")?;
             let mut kb = VirtualKeyboard::new()?;
@@ -123,6 +126,7 @@ fn run(config_path: &Path) -> Result<()> {
     let shared = Arc::new(Mutex::new(Shared {
         touchpad: VirtualTouchpad::new()?,
         keyboard: VirtualKeyboard::new()?,
+        toggles: HashMap::new(),
     }));
     let compositor_natural = config::detect_compositor_natural_scroll();
     log::info!("compositor touchpad natural scroll: {compositor_natural}");
@@ -353,7 +357,7 @@ fn demo_swipe(args: &[String]) -> Result<()> {
 
 /// Test helper: emulate the evdev stream of a Magic Mouse 2 as produced by
 /// hid-magicmouse, so the daemon can be exercised without touching hardware.
-fn fake_mouse(what: &str) -> Result<()> {
+fn fake_mouse(what: &str, repeat: usize) -> Result<()> {
     use evdev::uinput::VirtualDevice;
     use evdev::{AbsInfo, AttributeSet, BusType, EventType, InputEvent, InputId, KeyCode, RelativeAxisCode, UinputAbsSetup};
     let mut keys = AttributeSet::<KeyCode>::new();
@@ -379,8 +383,13 @@ fn fake_mouse(what: &str) -> Result<()> {
     thread::sleep(Duration::from_millis(2500));
 
     if what == "double-tap-1" {
-        // One finger, two quick taps with the drift a real fingertip shows.
-        println!("1-finger double tap");
+        // One finger, two quick taps with the drift a real fingertip shows,
+        // repeated `repeat` times with a pause in between.
+        for r in 0..repeat {
+            if r > 0 {
+                thread::sleep(Duration::from_millis(900));
+            }
+            println!("1-finger double tap");
         for _ in 0..2 {
             dev.emit(&[
                 a(AbsoluteAxisCode::ABS_MT_SLOT, 0),
@@ -400,6 +409,7 @@ fn fake_mouse(what: &str) -> Result<()> {
             }
             dev.emit(&[a(AbsoluteAxisCode::ABS_MT_TRACKING_ID, -1), syn])?;
             thread::sleep(Duration::from_millis(150));
+        }
         }
         thread::sleep(Duration::from_millis(600));
         return Ok(());

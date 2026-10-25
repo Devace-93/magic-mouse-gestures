@@ -46,6 +46,9 @@ struct Touch {
 pub struct Shared {
     pub touchpad: VirtualTouchpad,
     pub keyboard: VirtualKeyboard,
+    /// Position of `Action::Toggle` / `Action::Cycle` rules, keyed by rule
+    /// and focused app. Lives here so it survives a Bluetooth reconnect.
+    pub toggles: HashMap<String, usize>,
 }
 
 #[derive(Debug)]
@@ -113,9 +116,6 @@ pub struct Engine {
     /// When true, touch data comes from `handle_touch_frame` (hidraw) and
     /// evdev ABS events are ignored.
     hidraw_mode: bool,
-    /// Position of `Action::Toggle` / `Action::Cycle` rules, keyed by rule
-    /// and focused app.
-    toggles: HashMap<String, usize>,
 }
 
 impl Engine {
@@ -148,7 +148,6 @@ impl Engine {
             last_speed: 0.0,
             history: std::collections::VecDeque::with_capacity(16),
             hidraw_mode: false,
-            toggles: HashMap::new(),
         }
     }
 
@@ -561,10 +560,11 @@ impl Engine {
                 }
             }
             Action::Toggle { on, off } => {
-                let pos = self.toggles.entry(toggle_key.to_string()).or_insert(0);
+                let mut sh = self.shared.lock().unwrap();
+                let pos = sh.toggles.entry(toggle_key.to_string()).or_insert(0);
                 let combo = if *pos % 2 == 0 { on } else { off };
                 *pos += 1;
-                if let Err(e) = self.shared.lock().unwrap().keyboard.tap_combo(combo) {
+                if let Err(e) = sh.keyboard.tap_combo(combo) {
                     log::error!("toggle action '{combo}': {e}");
                 }
             }
@@ -572,11 +572,12 @@ impl Engine {
                 if steps.is_empty() {
                     return Ok(());
                 }
-                let pos = self.toggles.entry(toggle_key.to_string()).or_insert(0);
+                let mut sh = self.shared.lock().unwrap();
+                let pos = sh.toggles.entry(toggle_key.to_string()).or_insert(0);
                 let combo = &steps[*pos % steps.len()];
                 *pos += 1;
                 log::debug!("cycle step {}/{}: {combo}", *pos, steps.len());
-                if let Err(e) = self.shared.lock().unwrap().keyboard.tap_combo(combo) {
+                if let Err(e) = sh.keyboard.tap_combo(combo) {
                     log::error!("cycle action '{combo}': {e}");
                 }
             }
@@ -640,6 +641,7 @@ mod tests {
         let shared = Arc::new(Mutex::new(Shared {
             touchpad: VirtualTouchpad::new().unwrap(),
             keyboard: VirtualKeyboard::new().unwrap(),
+            toggles: HashMap::new(),
         }));
         let mouse = VirtualMouse::new("Test Magic Mouse", InputId::new(BusType::BUS_BLUETOOTH, 0x4c, 0x269, 1)).unwrap();
         let ax = AxisInfo { min: -1100, max: 1258, res: 26.0 };
