@@ -38,8 +38,6 @@ DEFAULTS = {
     "gesture": [
         {"kind": "double_tap", "fingers": 2, "enabled": True, "action": {"type": "key", "combo": "super+w"}},
         {"kind": "tap", "fingers": 3, "enabled": True, "action": {"type": "key", "combo": "super+a"}},
-        {"kind": "double_tap", "fingers": 1, "enabled": True,
-         "action": {"type": "cycle", "steps": ["ctrl+kpplus,ctrl+kpplus", "ctrl+kpplus,ctrl+kpplus", "ctrl+kpplus", "ctrl+0"]}},
     ],
 }
 
