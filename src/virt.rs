@@ -229,6 +229,59 @@ impl VirtualTouchpad {
         Ok(())
     }
 
+    /// Put fingers down at absolute pad positions (mm from the top-left).
+    pub fn begin_at(&mut self, positions_mm: &[(f64, f64)]) -> Result<()> {
+        if self.fingers > 0 {
+            self.end()?;
+        }
+        let n = positions_mm.len().clamp(1, MAX_SLOTS);
+        self.pos = positions_mm[..n].iter().map(|(x, y)| (x * PAD_RES as f64, y * PAD_RES as f64)).collect();
+        self.fingers = n;
+        let mut evs = Vec::with_capacity(n * 4 + 6);
+        for (slot, (x, y)) in self.pos.iter().enumerate() {
+            evs.push(abs(AbsoluteAxisCode::ABS_MT_SLOT, slot as i32));
+            evs.push(abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID, self.next_tracking_id));
+            self.next_tracking_id = (self.next_tracking_id + 1) % 65000;
+            evs.push(abs(AbsoluteAxisCode::ABS_MT_POSITION_X, x.round() as i32));
+            evs.push(abs(AbsoluteAxisCode::ABS_MT_POSITION_Y, y.round() as i32));
+        }
+        evs.push(key(KeyCode::BTN_TOUCH, 1));
+        evs.push(key(Self::tool_code(n), 1));
+        evs.push(abs(AbsoluteAxisCode::ABS_X, self.pos[0].0.round() as i32));
+        evs.push(abs(AbsoluteAxisCode::ABS_Y, self.pos[0].1.round() as i32));
+        evs.push(SYN_REPORT());
+        self.dev.emit(&evs)?;
+        Ok(())
+    }
+
+    /// Move the fingers to absolute pad positions (mm). Extra positions are
+    /// ignored; missing ones keep their place.
+    pub fn move_to(&mut self, positions_mm: &[(f64, f64)]) -> Result<()> {
+        if self.fingers == 0 {
+            return Ok(());
+        }
+        let max_x = PAD_W_MM * PAD_RES as f64 - 1.0;
+        let max_y = PAD_H_MM * PAD_RES as f64 - 1.0;
+        let mut evs = Vec::with_capacity(self.fingers * 3 + 3);
+        for (slot, (p, target)) in self.pos.iter_mut().zip(positions_mm).enumerate() {
+            p.0 = (target.0 * PAD_RES as f64).clamp(0.0, max_x);
+            p.1 = (target.1 * PAD_RES as f64).clamp(0.0, max_y);
+            evs.push(abs(AbsoluteAxisCode::ABS_MT_SLOT, slot as i32));
+            evs.push(abs(AbsoluteAxisCode::ABS_MT_POSITION_X, p.0.round() as i32));
+            evs.push(abs(AbsoluteAxisCode::ABS_MT_POSITION_Y, p.1.round() as i32));
+        }
+        evs.push(abs(AbsoluteAxisCode::ABS_X, self.pos[0].0.round() as i32));
+        evs.push(abs(AbsoluteAxisCode::ABS_Y, self.pos[0].1.round() as i32));
+        evs.push(SYN_REPORT());
+        self.dev.emit(&evs)?;
+        Ok(())
+    }
+
+    /// Centre of the pad in millimetres.
+    pub fn center_mm() -> (f64, f64) {
+        (PAD_W_MM / 2.0, PAD_H_MM / 2.0)
+    }
+
     /// Lift all fingers.
     pub fn end(&mut self) -> Result<()> {
         if self.fingers == 0 {

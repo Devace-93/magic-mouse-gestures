@@ -3,6 +3,7 @@
 //! mouse, and turns multi-finger touches into gestures.
 
 use crate::config::{Action, Axis, Config, Direction, GestureKind, SwipeDir};
+use crate::focus::Focus;
 use crate::hidraw::RawTouch;
 use crate::virt::{VirtualKeyboard, VirtualMouse, VirtualTouchpad};
 use anyhow::Result;
@@ -53,6 +54,9 @@ enum SwipeState {
     /// Replaying motion on the virtual touchpad; `sign` flips direction,
     /// `axis` picks the component forwarded.
     Workspace { sign: f64, axis: Axis },
+    /// Replaying a pinch: two synthetic contacts whose distance follows the
+    /// real finger distance (`sep0` = real distance when the pinch started).
+    Pinch { sep0: f64, origin: (f64, f64) },
     /// A discrete swipe rule already fired (or nothing matched); wait for the
     /// finger count to change.
     Done,
@@ -64,6 +68,8 @@ struct Session {
     count: usize,
     /// Centroid (mm) when the current finger count was established.
     anchor: (f64, f64),
+    /// Finger spread (mm) when the current finger count was established.
+    sep_anchor: f64,
     last_centroid: (f64, f64),
     swipe: SwipeState,
     /// True once any continuous or discrete swipe ran in this session.
@@ -93,6 +99,8 @@ pub struct Engine {
     pending_tap: Option<PendingTap>,
     last_tap: Option<(usize, Instant)>,
     compositor_natural: bool,
+    /// Focused window app id (for per-application rules).
+    focus: Focus,
     /// Max finger travel seen in the frame before all fingers lifted.
     last_travel: f64,
     /// When true, touch data comes from `handle_touch_frame` (hidraw) and
@@ -108,6 +116,7 @@ impl Engine {
         ax: AxisInfo,
         ay: AxisInfo,
         compositor_natural: bool,
+        focus: Focus,
     ) -> Self {
         Self {
             cfg,
@@ -124,6 +133,7 @@ impl Engine {
             pending_tap: None,
             last_tap: None,
             compositor_natural,
+            focus,
             last_travel: 0.0,
             hidraw_mode: false,
         }
@@ -272,6 +282,19 @@ impl Engine {
         }
     }
 
+    /// Finger spread (mm): mean distance of the fingers to their centroid,
+    /// doubled so that for two fingers it equals the distance between them.
+    fn spread_mm(&self, centroid: (f64, f64)) -> f64 {
+        let (mut n, mut sum) = (0usize, 0.0);
+        for t in self.slots.iter().flatten() {
+            let dx = self.ax.to_mm(t.x) - centroid.0;
+            let dy = self.ay.to_mm(t.y) - centroid.1;
+            sum += (dx * dx + dy * dy).sqrt();
+            n += 1;
+        }
+        if n < 2 { 0.0 } else { 2.0 * sum / n as f64 }
+    }
+
     /// Largest distance any finger moved from where it landed (mm).
     fn max_travel_mm(&self) -> f64 {
         self.slots
@@ -297,7 +320,7 @@ impl Engine {
 
         if n == 0 {
             if let Some(s) = self.session.take() {
-                if matches!(s.swipe, SwipeState::Workspace { .. }) {
+                if matches!(s.swipe, SwipeState::Workspace { .. } | SwipeState::Pinch { .. }) {
                     self.shared.lock().unwrap().touchpad.end()?;
                 }
                 let taps = self.cfg.read().unwrap().taps.clone();
@@ -311,12 +334,14 @@ impl Engine {
         }
         self.last_travel = travel;
 
+        let spread = self.spread_mm(c);
         let mut session = match self.session.take() {
             None => Session {
                 start: now,
                 max_fingers: n,
                 count: n,
                 anchor: c,
+                sep_anchor: spread,
                 last_centroid: c,
                 swipe: SwipeState::Armed,
                 gestured: false,
@@ -326,12 +351,13 @@ impl Engine {
 
         if session.count != n {
             // Finger count changed: close any running swipe and re-arm.
-            if matches!(session.swipe, SwipeState::Workspace { .. }) {
+            if matches!(session.swipe, SwipeState::Workspace { .. } | SwipeState::Pinch { .. }) {
                 self.shared.lock().unwrap().touchpad.end()?;
             }
             session.count = n;
             session.max_fingers = session.max_fingers.max(n);
             session.anchor = c;
+            session.sep_anchor = spread;
             session.last_centroid = c;
             session.swipe = SwipeState::Armed;
         }
@@ -344,17 +370,39 @@ impl Engine {
                 let (vx, vy) = match axis {
                     Axis::Horizontal => (dx * sens * sign, 0.0),
                     Axis::Vertical => (0.0, dy * sens * sign),
+                    Axis::Both => (dx * sens * sign, dy * sens * sign),
                 };
                 if vx != 0.0 || vy != 0.0 {
                     self.shared.lock().unwrap().touchpad.move_by(vx, vy)?;
                 }
             }
+            SwipeState::Pinch { sep0, origin } => {
+                let sens = self.cfg.read().unwrap().pinch.sensitivity;
+                let positions = pinch_positions(origin, c, session.anchor, sep0, spread, sens);
+                self.shared.lock().unwrap().touchpad.move_to(&positions)?;
+            }
             SwipeState::Armed => {
                 let dx = c.0 - session.anchor.0;
                 let dy = c.1 - session.anchor.1;
                 let dist = (dx * dx + dy * dy).sqrt();
-                let ws = self.cfg.read().unwrap().workspace_swipe.clone();
-                if dist >= ws.activation_mm {
+                let (ws, pinch) = {
+                    let cfg = self.cfg.read().unwrap();
+                    (cfg.workspace_swipe.clone(), cfg.pinch.clone())
+                };
+                let dsep = spread - session.sep_anchor;
+                if pinch.enabled && pinch.fingers as usize == n && dsep.abs() >= pinch.activation_mm && dsep.abs() > dist {
+                    // Fingers moving apart/together faster than they travel: pinch.
+                    let origin = VirtualTouchpad::center_mm();
+                    let sep0 = session.sep_anchor.max(1.0);
+                    let positions = pinch_positions(origin, c, session.anchor, sep0, spread, pinch.sensitivity);
+                    let mut sh = self.shared.lock().unwrap();
+                    sh.touchpad.begin_at(&pinch_positions(origin, session.anchor, session.anchor, sep0, sep0, pinch.sensitivity))?;
+                    sh.touchpad.move_to(&positions)?;
+                    drop(sh);
+                    session.gestured = true;
+                    session.swipe = SwipeState::Pinch { sep0, origin };
+                    log::debug!("pinch begin: {n} fingers, spread {sep0:.1} -> {spread:.1} mm");
+                } else if dist >= ws.activation_mm {
                     let dir = if dx.abs() >= dy.abs() {
                         if dx > 0.0 { SwipeDir::Right } else { SwipeDir::Left }
                     } else if dy > 0.0 {
@@ -371,15 +419,21 @@ impl Engine {
                         // The compositor already follows the fingers when its
                         // own natural scrolling is on; otherwise flip.
                         let sign = if natural != compositor_natural { -1.0 } else { 1.0 };
+                        // With `both`, lock to the direction the fingers took first.
+                        let axis = match ws.axis {
+                            Axis::Both if matches!(dir, SwipeDir::Up | SwipeDir::Down) => Axis::Vertical,
+                            Axis::Both => Axis::Horizontal,
+                            a => a,
+                        };
                         let mut sh = self.shared.lock().unwrap();
                         sh.touchpad.begin(ws.synthetic_fingers as usize)?;
-                        let (vx, vy) = match ws.axis {
+                        let (vx, vy) = match axis {
                             Axis::Horizontal => (dx * ws.sensitivity * sign, 0.0),
-                            Axis::Vertical => (0.0, dy * ws.sensitivity * sign),
+                            _ => (0.0, dy * ws.sensitivity * sign),
                         };
                         sh.touchpad.move_by(vx, vy)?;
                         drop(sh);
-                        session.swipe = SwipeState::Workspace { sign, axis: ws.axis };
+                        session.swipe = SwipeState::Workspace { sign, axis };
                         log::debug!("workspace swipe begin: {n} fingers, dir {dir:?}");
                     } else {
                         session.swipe = SwipeState::Done;
@@ -422,15 +476,21 @@ impl Engine {
     /// Run the first enabled rule matching (kind, fingers, direction).
     /// Returns true if a rule fired.
     fn fire_rule(&mut self, kind: GestureKind, fingers: usize, dir: Option<SwipeDir>) -> Result<bool> {
+        let focused = self.focus.lock().unwrap().clone().unwrap_or_default().to_ascii_lowercase();
         let action = {
             let cfg = self.cfg.read().unwrap();
-            cfg.gestures
+            let mut candidates = cfg
+                .gestures
                 .iter()
-                .find(|g| g.enabled && g.kind == kind && g.fingers as usize == fingers && (kind != GestureKind::Swipe || g.direction == dir))
-                .map(|g| g.action.clone())
+                .filter(|g| g.enabled && g.kind == kind && g.fingers as usize == fingers && (kind != GestureKind::Swipe || g.direction == dir));
+            // A rule scoped to the focused app wins over a generic one.
+            let scoped = candidates
+                .clone()
+                .find(|g| g.app.as_deref().map_or(false, |a| !focused.is_empty() && focused.contains(&a.to_ascii_lowercase())));
+            scoped.or_else(|| candidates.find(|g| g.app.is_none())).map(|g| (g.action.clone(), g.app.clone()))
         };
-        let Some(action) = action else { return Ok(false) };
-        log::info!("gesture {kind:?} {fingers}f {dir:?} -> {action:?}");
+        let Some((action, app)) = action else { return Ok(false) };
+        log::info!("gesture {kind:?} {fingers}f {dir:?} app={app:?} -> {action:?}");
         self.run_action(&action)?;
         Ok(true)
     }
@@ -461,7 +521,20 @@ fn axis_matches(axis: Axis, dir: SwipeDir) -> bool {
     match axis {
         Axis::Horizontal => matches!(dir, SwipeDir::Left | SwipeDir::Right),
         Axis::Vertical => matches!(dir, SwipeDir::Up | SwipeDir::Down),
+        Axis::Both => true,
     }
+}
+
+/// Where the two synthetic pinch contacts sit on the pad (mm): centred on
+/// `origin` plus the real centroid's displacement, separated by a base
+/// distance scaled with the real spread ratio raised to `sensitivity`.
+fn pinch_positions(origin: (f64, f64), centroid: (f64, f64), anchor: (f64, f64), sep0: f64, spread: f64, sensitivity: f64) -> [(f64, f64); 2] {
+    const BASE_SEP_MM: f64 = 40.0;
+    let ratio = (spread.max(0.5) / sep0.max(0.5)).powf(sensitivity);
+    let sep = (BASE_SEP_MM * ratio).clamp(4.0, 180.0);
+    let cx = origin.0 + (centroid.0 - anchor.0);
+    let cy = origin.1 + (centroid.1 - anchor.1);
+    [(cx - sep / 2.0, cy), (cx + sep / 2.0, cy)]
 }
 
 impl Engine {
@@ -493,7 +566,38 @@ mod tests {
         let mouse = VirtualMouse::new("Test Magic Mouse", InputId::new(BusType::BUS_BLUETOOTH, 0x4c, 0x269, 1)).unwrap();
         let ax = AxisInfo { min: -1100, max: 1258, res: 26.0 };
         let ay = AxisInfo { min: -1589, max: 2047, res: 70.0 };
-        Engine::new(cfg, shared, mouse, ax, ay, false)
+        Engine::new(cfg, shared, mouse, ax, ay, false, Arc::new(Mutex::new(None)))
+    }
+
+    #[test]
+    fn two_finger_spread_is_a_pinch() {
+        let mut e = engine();
+        for ev in [
+            abs(AbsoluteAxisCode::ABS_MT_SLOT, 0),
+            abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID, 1),
+            abs(AbsoluteAxisCode::ABS_MT_POSITION_X, -100),
+            abs(AbsoluteAxisCode::ABS_MT_POSITION_Y, 0),
+            abs(AbsoluteAxisCode::ABS_MT_SLOT, 1),
+            abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID, 2),
+            abs(AbsoluteAxisCode::ABS_MT_POSITION_X, 100),
+            abs(AbsoluteAxisCode::ABS_MT_POSITION_Y, 0),
+            syn(),
+        ] {
+            e.handle(ev).unwrap();
+        }
+        // Spread both fingers outwards by 6 mm each (156 units), centroid fixed.
+        for step in 1..=4 {
+            for ev in [
+                abs(AbsoluteAxisCode::ABS_MT_SLOT, 0),
+                abs(AbsoluteAxisCode::ABS_MT_POSITION_X, -100 - 39 * step),
+                abs(AbsoluteAxisCode::ABS_MT_SLOT, 1),
+                abs(AbsoluteAxisCode::ABS_MT_POSITION_X, 100 + 39 * step),
+                syn(),
+            ] {
+                e.handle(ev).unwrap();
+            }
+        }
+        assert!(matches!(e.session.as_ref().unwrap().swipe, SwipeState::Pinch { .. }), "pinch should be running");
     }
 
     #[test]

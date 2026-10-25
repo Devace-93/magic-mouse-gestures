@@ -8,11 +8,13 @@ Out of the box:
 | Gesture on the mouse       | Result                                                        |
 |----------------------------|---------------------------------------------------------------|
 | 2-finger swipe left/right  | Switch workspace, animated and following your fingers         |
+| 2-finger pinch             | Native pinch zoom in apps that support it (browsers, viewers) |
 | 2-finger double tap        | Show the workspaces (`Super+W` on COSMIC, `Super` on GNOME)   |
 | 1-finger scroll, clicks    | Unchanged (handled by the kernel `hid-magicmouse` driver)     |
 
 Extra taps and swipes (3 fingers, vertical swipes, ...) can be mapped to
-shortcuts, mouse buttons or commands in the config file.
+shortcuts, mouse buttons or commands in the config file, optionally only for
+a given application (e.g. 2-finger swipes = back/forward in the browser).
 
 ## How it works
 
@@ -32,8 +34,15 @@ daemon:
    The compositor sees an ordinary 4-finger touchpad swipe and runs its own
    workspace animation: it follows the fingers, pauses when they pause, goes
    back when they go back, and uses the release velocity to settle.
+   When two fingers move apart or together it replays **two contacts
+   spreading** instead, which libinput reports as a pinch and the compositor
+   forwards to the focused app as native pinch zoom.
 4. Recognises taps and discrete swipes and fires configurable actions through
-   a virtual keyboard / the virtual mouse / a shell command.
+   a virtual keyboard / the virtual mouse / a shell command. Rules can be
+   scoped to the focused application; the app id comes from the compositor's
+   toplevel protocols (wlr-foreign-toplevel-management on KDE/Sway/Hyprland,
+   ext-foreign-toplevel-list + cosmic-toplevel-info on COSMIC; GNOME exposes
+   neither, so there `app` rules are simply never matched).
 
 Nothing is patched in the kernel or the compositor, so it survives updates
 and works on any compositor with libinput touchpad gestures (COSMIC, GNOME,
@@ -84,12 +93,36 @@ kind = "double_tap"     # swipe | tap | double_tap
 fingers = 2
 action = { type = "key", combo = "super+w" }
 
+[pinch]
+enabled = true
+sensitivity = 1.5       # zoom aggressiveness
+
 [[gesture]]
 kind = "swipe"
 fingers = 3
 direction = "up"
 action = { type = "command", command = "notify-send 'three fingers up'" }
+
+# Per-application: in Firefox a 2-finger swipe goes back/forward instead of
+# switching workspaces (app-scoped rules win over the workspace swipe).
+[[gesture]]
+kind = "swipe"
+fingers = 2
+direction = "right"
+app = "firefox"
+action = { type = "key", combo = "alt+left" }
+
+[[gesture]]
+kind = "swipe"
+fingers = 2
+direction = "left"
+app = "firefox"
+action = { type = "key", combo = "alt+right" }
 ```
+
+On GNOME set `axis = "both"` under `[workspace_swipe]` (with
+`synthetic_fingers = 3`): a horizontal 2-finger swipe switches workspaces and a
+vertical one opens the overview, both with GNOME's own animation.
 
 ## Troubleshooting
 
@@ -109,6 +142,10 @@ journalctl --user -fu magic-mouse-gestures
   mouse is connected.
 - *Permission denied*: make sure the udev rule is installed (`install.sh`) or
   add yourself to the `input` group.
+- *Pinch zooms the wrong amount*: adjust `pinch.sensitivity` (1.0 = touchpad
+  parity).
+- *`app` rules never fire*: run with `-v` and look for "focus tracking via";
+  the compositor must expose one of the toplevel protocols listed above.
 
 ## Development
 
@@ -118,8 +155,9 @@ cargo build --release
 ```
 
 Layout: `src/main.rs` (device discovery, event loop), `src/engine.rs`
-(gesture recognition), `src/hidraw.rs` (HID report decoding), `src/virt.rs`
-(uinput devices), `src/config.rs`, `packaging/` (systemd unit, udev rule).
+(gesture recognition), `src/hidraw.rs` (HID report decoding), `src/focus.rs`
+(focused-app tracking over Wayland), `src/virt.rs` (uinput devices),
+`src/config.rs`, `packaging/` (systemd unit, udev rule).
 
 ## Related work
 
@@ -140,14 +178,6 @@ that is not tied to GNOME (configurable 3/4 synthetic fingers), a
 driver-independent hidraw decoder with an evdev fallback, a generic rule engine
 (tap / double tap / swipe x N fingers -> key, button or command), hot-reloaded
 configuration and a settings UI.
-
-## Ideas / roadmap
-
-- Pinch zoom: replay a two-finger spread as two synthetic contacts moving
-  apart, so the compositor's native pinch gesture fires (as Salacfrantisek's
-  project does).
-- Per-application rules (e.g. two-finger swipe = back/forward in browsers).
-- Vertical two-finger swipe for the overview on desktops that support it.
 
 ## License
 

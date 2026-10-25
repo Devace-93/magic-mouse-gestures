@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub general: General,
     pub workspace_swipe: WorkspaceSwipe,
+    pub pinch: Pinch,
     pub taps: Taps,
     #[serde(rename = "gesture")]
     pub gestures: Vec<GestureRule>,
@@ -49,6 +50,10 @@ pub enum Direction {
 pub enum Axis {
     Horizontal,
     Vertical,
+    /// Lock to whichever direction the fingers take first; the compositor
+    /// decides what each means (GNOME: horizontal = workspaces, vertical =
+    /// overview).
+    Both,
 }
 
 /// Continuous, compositor-animated workspace switching. Implemented by
@@ -87,6 +92,27 @@ impl Default for WorkspaceSwipe {
             axis: Axis::Horizontal,
             compositor_natural_scroll: None,
         }
+    }
+}
+
+/// Two fingers moving apart or together are replayed as a two-contact pinch
+/// on the virtual touchpad, so applications receive the compositor's native
+/// pinch-zoom gesture.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Pinch {
+    pub enabled: bool,
+    pub fingers: u8,
+    /// Exponent applied to the finger-distance ratio (1.0 = same zoom as a
+    /// touchpad; 2.0 = twice as aggressive).
+    pub sensitivity: f64,
+    /// Change in finger distance (mm) before a pinch starts.
+    pub activation_mm: f64,
+}
+
+impl Default for Pinch {
+    fn default() -> Self {
+        Self { enabled: true, fingers: 2, sensitivity: 1.5, activation_mm: 3.0 }
     }
 }
 
@@ -148,6 +174,12 @@ pub struct GestureRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction: Option<SwipeDir>,
     pub action: Action,
+    /// Only fire when the focused window's app id contains this text
+    /// (case-insensitive), e.g. "firefox". Rules with `app` win over generic
+    /// ones. Needs a compositor exposing toplevel info (COSMIC, KDE, Sway,
+    /// Hyprland); see focus.rs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
@@ -161,6 +193,7 @@ impl Default for Config {
         Self {
             general: General::default(),
             workspace_swipe: WorkspaceSwipe::default(),
+            pinch: Pinch::default(),
             taps: Taps::default(),
             gestures: vec![GestureRule {
                 kind: GestureKind::DoubleTap,
@@ -169,6 +202,7 @@ impl Default for Config {
                 action: Action::Key {
                     combo: default_overview_combo(),
                 },
+                app: None,
                 enabled: true,
             }],
         }

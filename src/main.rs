@@ -9,6 +9,7 @@
 
 mod config;
 mod engine;
+mod focus;
 mod hidraw;
 mod virt;
 
@@ -37,7 +38,7 @@ Commands:
                       (DIR = left|right|up|down, MM = travel, default 40)
   print-config        Print the effective configuration as TOML
   fake-mouse          Create a fake Magic Mouse via uinput and play a 2-finger
-                      swipe and a 2-finger double tap through it (testing)
+                      swipe, a pinch and a 2-finger double tap through it (testing)
 
 Options:
   -c, --config PATH   Config file (default: ~/.config/magic-mouse-gestures/config.toml)
@@ -114,6 +115,7 @@ fn run(config_path: &Path) -> Result<()> {
     }));
     let compositor_natural = config::detect_compositor_natural_scroll();
     log::info!("compositor touchpad natural scroll: {compositor_natural}");
+    let focus = focus::spawn();
 
     let active: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
     let mut last_mtime = std::fs::metadata(config_path).and_then(|m| m.modified()).ok();
@@ -141,10 +143,11 @@ fn run(config_path: &Path) -> Result<()> {
             let cfg = Arc::clone(&cfg);
             let shared = Arc::clone(&shared);
             let active = Arc::clone(&active);
+            let focus = Arc::clone(&focus);
             thread::spawn(move || {
                 let name = dev.name().unwrap_or("?").to_string();
                 log::info!("attached {} ({})", name, path.display());
-                if let Err(e) = serve_device(&path, dev, cfg, shared, compositor_natural) {
+                if let Err(e) = serve_device(&path, dev, cfg, shared, compositor_natural, focus) {
                     log::warn!("{} detached: {e:#}", name);
                 } else {
                     log::info!("{} detached", name);
@@ -156,7 +159,7 @@ fn run(config_path: &Path) -> Result<()> {
     }
 }
 
-fn serve_device(path: &Path, mut dev: Device, cfg: Arc<RwLock<Config>>, shared: Arc<Mutex<Shared>>, compositor_natural: bool) -> Result<()> {
+fn serve_device(path: &Path, mut dev: Device, cfg: Arc<RwLock<Config>>, shared: Arc<Mutex<Shared>>, compositor_natural: bool, focus: focus::Focus) -> Result<()> {
     // Magic Mouse 2 geometry from hid-magicmouse, used only if the driver
     // reports no resolution.
     let ax = axis_info(&dev, AbsoluteAxisCode::ABS_MT_POSITION_X, 26.0)?;
@@ -169,7 +172,7 @@ fn serve_device(path: &Path, mut dev: Device, cfg: Arc<RwLock<Config>>, shared: 
     dev.grab().context("grabbing device (EVIOCGRAB)")?;
     dev.set_nonblocking(true)?;
 
-    let mut engine = Engine::new(cfg, shared, mouse, ax, ay, compositor_natural);
+    let mut engine = Engine::new(cfg, shared, mouse, ax, ay, compositor_natural, focus);
 
     // Prefer raw HID reports for touch data (see hidraw.rs for why).
     let mut raw: Option<std::fs::File> = None;
@@ -398,6 +401,21 @@ fn fake_mouse() -> Result<()> {
             a(AbsoluteAxisCode::ABS_MT_POSITION_X, 400 - 26 * step),
             a(AbsoluteAxisCode::ABS_MT_SLOT, 1),
             a(AbsoluteAxisCode::ABS_MT_POSITION_X, 700 - 26 * step),
+            syn,
+        ])?;
+    }
+    lift(&mut dev)?;
+    thread::sleep(Duration::from_millis(800));
+
+    println!("2-finger pinch out, 12 mm");
+    land(&mut dev, 0)?;
+    for step in 1..=12 {
+        thread::sleep(Duration::from_millis(12));
+        dev.emit(&[
+            a(AbsoluteAxisCode::ABS_MT_SLOT, 0),
+            a(AbsoluteAxisCode::ABS_MT_POSITION_X, -13 * step),
+            a(AbsoluteAxisCode::ABS_MT_SLOT, 1),
+            a(AbsoluteAxisCode::ABS_MT_POSITION_X, 300 + 13 * step),
             syn,
         ])?;
     }
