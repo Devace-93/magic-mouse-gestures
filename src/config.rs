@@ -167,8 +167,11 @@ pub enum Action {
     /// separated by commas are pressed in sequence ("ctrl+equal,ctrl+equal").
     Key { combo: String },
     /// Alternate between two key sequences, remembered per focused app:
-    /// first trigger sends `on`, the next one `off`. Used for smart zoom.
+    /// first trigger sends `on`, the next one `off`.
     Toggle { on: String, off: String },
+    /// Walk through several key sequences, one per trigger, wrapping around;
+    /// position remembered per focused app. Used for smart zoom levels.
+    Cycle { steps: Vec<String> },
     /// Mouse button click: "left", "right" or "middle".
     Button { button: String },
     /// Shell command, run with `sh -c`.
@@ -222,15 +225,22 @@ impl Default for Config {
                     app: None,
                     enabled: true,
                 },
-                // macOS "smart zoom": one-finger double tap zooms the content
-                // in, the next one restores it. Ctrl+KP_Plus / Ctrl+0 are understood
-                // by browsers, editors, viewers and most GTK/Qt apps; the keypad key is
-                // the same in every keyboard layout (Ctrl+= is not).
+                // macOS "smart zoom": one-finger double taps step the content
+                // through 125% -> 175% -> 200% -> 100% (browser zoom presets:
+                // each Ctrl+KP_Plus is one preset). The keypad key is the same
+                // in every keyboard layout (Ctrl+= is not); Ctrl+0 resets.
                 GestureRule {
                     kind: GestureKind::DoubleTap,
                     fingers: 1,
                     direction: None,
-                    action: Action::Toggle { on: "ctrl+kpplus,ctrl+kpplus,ctrl+kpplus".into(), off: "ctrl+0".into() },
+                    action: Action::Cycle {
+                        steps: vec![
+                            "ctrl+kpplus,ctrl+kpplus".into(), // 100 -> 125
+                            "ctrl+kpplus,ctrl+kpplus".into(), // 125 -> 175
+                            "ctrl+kpplus".into(),             // 175 -> 200
+                            "ctrl+0".into(),                  // -> 100
+                        ],
+                    },
                     app: None,
                     enabled: true,
                 },

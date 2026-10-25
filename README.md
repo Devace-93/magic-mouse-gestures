@@ -11,7 +11,7 @@ Out of the box:
 | 2-finger pinch             | Native pinch zoom in apps that support it (browsers, viewers) |
 | 2-finger double tap        | Show the workspaces (`Super+W` on COSMIC, `Super` on GNOME)   |
 | 3-finger tap               | Show all applications (`Super+A` app library / app grid)      |
-| 1-finger double tap        | Smart zoom: zoom the app in (`Ctrl+KP_Plus` ×3), tap again to reset (`Ctrl+0`); remembered per app |
+| 1-finger double tap        | Smart zoom: cycles the app through 125% → 175% → 200% → 100% (`Ctrl+KP_Plus` presets, `Ctrl+0` reset); position remembered per app |
 | 1-finger scroll, clicks    | Unchanged (handled by the kernel `hid-magicmouse` driver)     |
 
 Extra taps and swipes (3 fingers, vertical swipes, ...) can be mapped to
@@ -99,12 +99,16 @@ action = { type = "key", combo = "super+w" }
 enabled = true
 sensitivity = 1.5       # zoom aggressiveness
 
-# Smart zoom alternative: magnify the whole screen with COSMIC's
-# accessibility zoom instead of the app's own zoom.
+# Smart zoom levels: each double tap sends the next step, wrapping around.
+# (Browsers step 100 -> 110 -> 125 -> 150 -> 175 -> 200 per Ctrl+KP_Plus.)
 [[gesture]]
 kind = "double_tap"
 fingers = 1
-action = { type = "toggle", on = "super+equal", off = "super+minus" }
+action = { type = "cycle", steps = ["ctrl+kpplus,ctrl+kpplus", "ctrl+kpplus,ctrl+kpplus", "ctrl+kpplus", "ctrl+0"] }
+
+# Alternative: a plain toggle that magnifies the whole screen with COSMIC's
+# accessibility zoom instead of the app's own zoom.
+# action = { type = "toggle", on = "super+equal", off = "super+minus" }
 
 [[gesture]]
 kind = "swipe"

@@ -113,8 +113,9 @@ pub struct Engine {
     /// When true, touch data comes from `handle_touch_frame` (hidraw) and
     /// evdev ABS events are ignored.
     hidraw_mode: bool,
-    /// State of `Action::Toggle` rules, keyed by rule and focused app.
-    toggles: HashMap<String, bool>,
+    /// Position of `Action::Toggle` / `Action::Cycle` rules, keyed by rule
+    /// and focused app.
+    toggles: HashMap<String, usize>,
 }
 
 impl Engine {
@@ -560,11 +561,23 @@ impl Engine {
                 }
             }
             Action::Toggle { on, off } => {
-                let state = self.toggles.entry(toggle_key.to_string()).or_insert(false);
-                *state = !*state;
-                let combo = if *state { on } else { off };
+                let pos = self.toggles.entry(toggle_key.to_string()).or_insert(0);
+                let combo = if *pos % 2 == 0 { on } else { off };
+                *pos += 1;
                 if let Err(e) = self.shared.lock().unwrap().keyboard.tap_combo(combo) {
                     log::error!("toggle action '{combo}': {e}");
+                }
+            }
+            Action::Cycle { steps } => {
+                if steps.is_empty() {
+                    return Ok(());
+                }
+                let pos = self.toggles.entry(toggle_key.to_string()).or_insert(0);
+                let combo = &steps[*pos % steps.len()];
+                *pos += 1;
+                log::debug!("cycle step {}/{}: {combo}", *pos, steps.len());
+                if let Err(e) = self.shared.lock().unwrap().keyboard.tap_combo(combo) {
+                    log::error!("cycle action '{combo}': {e}");
                 }
             }
             Action::Button { button } => {
