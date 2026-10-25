@@ -402,6 +402,11 @@ fn key_table() -> HashMap<&'static str, KeyCode> {
         (&["insert"][..], K::KEY_INSERT),
         (&["minus", "-"][..], K::KEY_MINUS),
         (&["equal", "="][..], K::KEY_EQUAL),
+        // Keypad keys are layout independent: prefer them for +/- shortcuts.
+        (&["kpplus", "plus", "+"][..], K::KEY_KPPLUS),
+        (&["kpminus"][..], K::KEY_KPMINUS),
+        (&["kp0"][..], K::KEY_KP0),
+        (&["kpenter"][..], K::KEY_KPENTER),
         (&["comma", ","][..], K::KEY_COMMA),
         (&["dot", "period", "."][..], K::KEY_DOT),
         (&["slash", "/"][..], K::KEY_SLASH),

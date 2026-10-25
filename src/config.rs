@@ -121,8 +121,13 @@ impl Default for Pinch {
 pub struct Taps {
     /// Max duration of a touch to count as a tap.
     pub tap_max_ms: u64,
-    /// Max finger travel during a tap.
+    /// Max finger travel during a tap. A fingertip rolling onto the Magic
+    /// Mouse's curved surface reports 7-13 mm of drift, so this is generous;
+    /// `tap_max_lift_speed` is what separates taps from scroll flicks.
     pub tap_max_mm: f64,
+    /// Max finger speed (mm/s) just before lifting. A tapping finger comes to
+    /// rest before it leaves; a scroll flick is still moving.
+    pub tap_max_lift_speed: f64,
     /// Max gap between two taps to count as a double tap.
     pub double_tap_ms: u64,
 }
@@ -131,7 +136,8 @@ impl Default for Taps {
     fn default() -> Self {
         Self {
             tap_max_ms: 300,
-            tap_max_mm: 4.0,
+            tap_max_mm: 15.0,
+            tap_max_lift_speed: 80.0,
             double_tap_ms: 400,
         }
     }
@@ -217,13 +223,14 @@ impl Default for Config {
                     enabled: true,
                 },
                 // macOS "smart zoom": one-finger double tap zooms the content
-                // in, the next one restores it. Ctrl+= / Ctrl+0 are understood
-                // by browsers, editors, viewers and most GTK/Qt apps.
+                // in, the next one restores it. Ctrl+KP_Plus / Ctrl+0 are understood
+                // by browsers, editors, viewers and most GTK/Qt apps; the keypad key is
+                // the same in every keyboard layout (Ctrl+= is not).
                 GestureRule {
                     kind: GestureKind::DoubleTap,
                     fingers: 1,
                     direction: None,
-                    action: Action::Toggle { on: "ctrl+equal,ctrl+equal,ctrl+equal".into(), off: "ctrl+0".into() },
+                    action: Action::Toggle { on: "ctrl+kpplus,ctrl+kpplus,ctrl+kpplus".into(), off: "ctrl+0".into() },
                     app: None,
                     enabled: true,
                 },

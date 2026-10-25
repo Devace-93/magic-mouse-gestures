@@ -11,7 +11,7 @@ Out of the box:
 | 2-finger pinch             | Native pinch zoom in apps that support it (browsers, viewers) |
 | 2-finger double tap        | Show the workspaces (`Super+W` on COSMIC, `Super` on GNOME)   |
 | 3-finger tap               | Show all applications (`Super+A` app library / app grid)      |
-| 1-finger double tap        | Smart zoom: zoom the app in (`Ctrl+=` ×3), tap again to reset (`Ctrl+0`); remembered per app |
+| 1-finger double tap        | Smart zoom: zoom the app in (`Ctrl+KP_Plus` ×3), tap again to reset (`Ctrl+0`); remembered per app |
 | 1-finger scroll, clicks    | Unchanged (handled by the kernel `hid-magicmouse` driver)     |
 
 Extra taps and swipes (3 fingers, vertical swipes, ...) can be mapped to

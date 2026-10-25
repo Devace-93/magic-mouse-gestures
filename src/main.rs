@@ -37,8 +37,11 @@ Commands:
   demo-swipe DIR [MM] Replay a synthetic swipe on the virtual touchpad
                       (DIR = left|right|up|down, MM = travel, default 40)
   print-config        Print the effective configuration as TOML
-  fake-mouse          Create a fake Magic Mouse via uinput and play a 2-finger
-                      swipe, a pinch and a 2-finger double tap through it (testing)
+  key COMBO           Press a key combo through a virtual keyboard (testing),
+                      e.g. key ctrl+kpplus  or  key 'ctrl+equal,ctrl+equal'
+  fake-mouse [WHAT]   Create a fake Magic Mouse via uinput and play gestures
+                      through it (testing). WHAT = all (swipe, pinch, 2-finger
+                      double tap) or double-tap-1
 
 Options:
   -c, --config PATH   Config file (default: ~/.config/magic-mouse-gestures/config.toml)
@@ -75,7 +78,15 @@ fn main() -> Result<()> {
         "probe" => probe(&config_path, false),
         "watch" => probe(&config_path, true),
         "demo-swipe" => demo_swipe(&rest),
-        "fake-mouse" => fake_mouse(),
+        "fake-mouse" => fake_mouse(rest.first().map(String::as_str).unwrap_or("all")),
+        "key" => {
+            let combo = rest.first().context("key needs a combo, e.g. ctrl+kpplus")?;
+            let mut kb = VirtualKeyboard::new()?;
+            thread::sleep(Duration::from_millis(800)); // let the compositor add the device
+            kb.tap_combo(combo)?;
+            thread::sleep(Duration::from_millis(200));
+            Ok(())
+        }
         "print-config" => {
             let cfg = config::load_or_create(&config_path)?;
             print!("{}", config::to_toml(&cfg)?);
@@ -342,7 +353,7 @@ fn demo_swipe(args: &[String]) -> Result<()> {
 
 /// Test helper: emulate the evdev stream of a Magic Mouse 2 as produced by
 /// hid-magicmouse, so the daemon can be exercised without touching hardware.
-fn fake_mouse() -> Result<()> {
+fn fake_mouse(what: &str) -> Result<()> {
     use evdev::uinput::VirtualDevice;
     use evdev::{AbsInfo, AttributeSet, BusType, EventType, InputEvent, InputId, KeyCode, RelativeAxisCode, UinputAbsSetup};
     let mut keys = AttributeSet::<KeyCode>::new();
@@ -366,6 +377,33 @@ fn fake_mouse() -> Result<()> {
     let syn = InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0);
     println!("fake mouse created; waiting for the daemon to attach");
     thread::sleep(Duration::from_millis(2500));
+
+    if what == "double-tap-1" {
+        // One finger, two quick taps with the drift a real fingertip shows.
+        println!("1-finger double tap");
+        for _ in 0..2 {
+            dev.emit(&[
+                a(AbsoluteAxisCode::ABS_MT_SLOT, 0),
+                a(AbsoluteAxisCode::ABS_MT_TRACKING_ID, 20),
+                a(AbsoluteAxisCode::ABS_MT_POSITION_X, -244),
+                a(AbsoluteAxisCode::ABS_MT_POSITION_Y, -278),
+                syn,
+            ])?;
+            for step in 1..=8 {
+                thread::sleep(Duration::from_millis(11));
+                dev.emit(&[a(AbsoluteAxisCode::ABS_MT_POSITION_Y, -278 - 60 * step), syn])?;
+            }
+            // The fingertip settles for a couple of reports before it leaves.
+            for step_settle in 1..=2 {
+                thread::sleep(Duration::from_millis(11));
+                dev.emit(&[a(AbsoluteAxisCode::ABS_MT_POSITION_X, -244 + 10 * (step_settle as i32)), syn])?;
+            }
+            dev.emit(&[a(AbsoluteAxisCode::ABS_MT_TRACKING_ID, -1), syn])?;
+            thread::sleep(Duration::from_millis(150));
+        }
+        thread::sleep(Duration::from_millis(600));
+        return Ok(());
+    }
 
     let land = |dev: &mut VirtualDevice, x0: i32| -> Result<()> {
         dev.emit(&[

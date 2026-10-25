@@ -106,6 +106,10 @@ pub struct Engine {
     focus: Focus,
     /// Max finger travel seen in the frame before all fingers lifted.
     last_travel: f64,
+    /// Centroid speed (mm/s) over the last ~20 ms before all fingers lifted.
+    last_speed: f64,
+    /// Recent (time, centroid) samples, newest last, about 100 ms deep.
+    history: std::collections::VecDeque<(Instant, (f64, f64))>,
     /// When true, touch data comes from `handle_touch_frame` (hidraw) and
     /// evdev ABS events are ignored.
     hidraw_mode: bool,
@@ -140,6 +144,8 @@ impl Engine {
             compositor_natural,
             focus,
             last_travel: 0.0,
+            last_speed: 0.0,
+            history: std::collections::VecDeque::with_capacity(16),
             hidraw_mode: false,
             toggles: HashMap::new(),
         }
@@ -337,16 +343,48 @@ impl Engine {
                 if matches!(s.swipe, SwipeState::Workspace { .. } | SwipeState::Pinch { .. }) {
                     self.shared.lock().unwrap().touchpad.end()?;
                 }
+                // Lift speed measured up to the lift itself: a finger that
+                // rested a while before leaving (no new samples, since the
+                // kernel drops unchanged positions) counts as slow.
+                if let Some(&(_, c_last)) = self.history.back() {
+                    if let Some(&(t0, c0)) = self.history.iter().rev().find(|(t, _)| now.duration_since(*t) >= Duration::from_millis(20)) {
+                        let dt = now.duration_since(t0).as_secs_f64().max(0.005);
+                        self.last_speed = ((c_last.0 - c0.0).powi(2) + (c_last.1 - c0.1).powi(2)).sqrt() / dt;
+                    }
+                }
                 let taps = self.cfg.read().unwrap().taps.clone();
                 let dur = now.duration_since(s.start);
-                if !s.gestured && !s.clicked && dur <= Duration::from_millis(taps.tap_max_ms) && self.last_travel <= taps.tap_max_mm {
+                let is_tap = !s.gestured
+                    && !s.clicked
+                    && dur <= Duration::from_millis(taps.tap_max_ms)
+                    && self.last_travel <= taps.tap_max_mm
+                    && self.last_speed <= taps.tap_max_lift_speed;
+                log::debug!(
+                    "touch ended: {} finger(s), {} ms, travel {:.1} mm, lift speed {:.0} mm/s -> {}",
+                    s.max_fingers, dur.as_millis(), self.last_travel, self.last_speed,
+                    if is_tap { "tap" } else { "not a tap" }
+                );
+                if is_tap {
                     self.register_tap(s.max_fingers, now, Duration::from_millis(taps.double_tap_ms))?;
                 }
             }
             self.last_travel = 0.0;
+            self.last_speed = 0.0;
+            self.history.clear();
             return Ok(());
         }
         self.last_travel = travel;
+        // Lift speed: displacement between this frame and the most recent
+        // sample at least 20 ms older (two reports), so a single noisy frame
+        // cannot decide. A tapping finger has settled by now; a flick has not.
+        self.history.push_back((now, c));
+        while self.history.len() > 1 && now.duration_since(self.history[0].0) > Duration::from_millis(100) {
+            self.history.pop_front();
+        }
+        if let Some(&(t0, c0)) = self.history.iter().rev().find(|(t, _)| now.duration_since(*t) >= Duration::from_millis(20)) {
+            let dt = now.duration_since(t0).as_secs_f64().max(0.005);
+            self.last_speed = ((c.0 - c0.0).powi(2) + (c.1 - c0.1).powi(2)).sqrt() / dt;
+        }
 
         let spread = self.spread_mm(c);
         let mut session = match self.session.take() {
@@ -425,10 +463,11 @@ impl Engine {
                     } else {
                         SwipeDir::Up
                     };
-                    session.gestured = true;
                     if self.fire_rule(GestureKind::Swipe, n, Some(dir))? {
+                        session.gestured = true;
                         session.swipe = SwipeState::Done;
                     } else if ws.enabled && ws.fingers as usize == n && axis_matches(ws.axis, dir) {
+                        session.gestured = true;
                         let natural = ws.direction == Direction::Natural;
                         let compositor_natural = ws.compositor_natural_scroll.unwrap_or(self.compositor_natural);
                         // The compositor already follows the fingers when its
@@ -451,6 +490,8 @@ impl Engine {
                         session.swipe = SwipeState::Workspace { sign, axis };
                         log::debug!("workspace swipe begin: {n} fingers, dir {dir:?}");
                     } else {
+                        // Nothing to do with this motion; a short touch may
+                        // still end as a tap (fingertips drift when tapping).
                         session.swipe = SwipeState::Done;
                     }
                 }
