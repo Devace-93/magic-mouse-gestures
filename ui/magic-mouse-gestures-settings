@@ -34,12 +34,12 @@ DEFAULTS = {
         # compositor_natural_scroll absent = auto
     },
     "pinch": {"enabled": True, "fingers": 2, "sensitivity": 1.5, "activation_mm": 3.0},
-    "taps": {"tap_max_ms": 300, "tap_max_mm": 4.0, "double_tap_ms": 400},
+    "taps": {"tap_max_ms": 300, "tap_max_mm": 15.0, "tap_max_lift_speed": 80.0, "double_tap_ms": 400},
     "gesture": [
         {"kind": "double_tap", "fingers": 2, "enabled": True, "action": {"type": "key", "combo": "super+w"}},
         {"kind": "tap", "fingers": 3, "enabled": True, "action": {"type": "key", "combo": "super+a"}},
         {"kind": "double_tap", "fingers": 1, "enabled": True,
-         "action": {"type": "toggle", "on": "ctrl+equal,ctrl+equal,ctrl+equal", "off": "ctrl+0"}},
+         "action": {"type": "toggle", "on": "ctrl+kpplus,ctrl+kpplus,ctrl+kpplus", "off": "ctrl+0"}},
     ],
 }
 
@@ -48,7 +48,7 @@ DIRS = [("left", "Left"), ("right", "Right"), ("up", "Up"), ("down", "Down")]
 ACTIONS = [("key", "Keyboard shortcut"), ("toggle", "Toggle two shortcuts"), ("button", "Mouse button"), ("command", "Run command")]
 ACTION_HINT = {
     "key": "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal",
-    "toggle": "First trigger (on), e.g. ctrl+equal,ctrl+equal,ctrl+equal",
+    "toggle": "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
     "button": "left, right or middle",
     "command": "shell command, e.g. notify-send hi",
 }
@@ -330,7 +330,8 @@ class Window(Adw.ApplicationWindow):
         taps = self.cfg["taps"]
         grp = Adw.PreferencesGroup(title="Tap timing")
         grp.add(spin_row("Tap max duration (ms)", None, taps["tap_max_ms"], 50, 1000, 10, 0, lambda v: self._set("taps", "tap_max_ms", v)))
-        grp.add(spin_row("Tap max movement (mm)", None, taps["tap_max_mm"], 0.5, 20, 0.5, 1, lambda v: self._set("taps", "tap_max_mm", v)))
+        grp.add(spin_row("Tap max movement (mm)", "Fingertips roll 7-13 mm on the curved surface", taps["tap_max_mm"], 0.5, 30, 0.5, 1, lambda v: self._set("taps", "tap_max_mm", v)))
+        grp.add(spin_row("Tap max lift speed (mm/s)", "Finger must be nearly still when it lifts; flicks are faster", taps["tap_max_lift_speed"], 10, 400, 10, 0, lambda v: self._set("taps", "tap_max_lift_speed", v)))
         grp.add(spin_row("Double tap window (ms)", None, taps["double_tap_ms"], 100, 1000, 10, 0, lambda v: self._set("taps", "double_tap_ms", v)))
         page.add(grp)
 
