@@ -101,14 +101,19 @@ action = { type = "key", combo = "super+w" }
 enabled = true
 sensitivity = 1.5       # zoom aggressiveness
 
-# One-finger scrolling starts with a short jump the wrong way on a Magic
-# Mouse: the kernel driver begins scrolling after ~1.3 mm of travel, and a
-# fingertip landing on the curved shell rolls about that far before the hand
-# moves. The daemon holds the first wheel events of each touch until the net
-# movement is clearly one way (120 units = one notch) and drops the rest.
+# One-finger scrolling. The kernel driver begins scrolling after ~1.3 mm of
+# travel, and a fingertip landing on the curved shell rolls about that far
+# before the hand moves, so a scroll often started with a jump the wrong way:
+# the daemon holds the first wheel events of each touch until the net movement
+# is clearly one way (120 units = one notch) and drops the rest. It also emits
+# wheel notches and high-resolution steps from one counter, so scrolling feels
+# the same on every connection (the driver's two counters disagree, and a flick
+# on the first scroll could switch libinput into a different mode for good).
 [scroll]
 direction_debounce = true
 debounce_units = 120    # raise if a scroll still starts backwards, lower if it starts late
+mode = "notches"        # "notches": whole wheel clicks, classic feel; "smooth": every 1/10 step
+speed = 1.0             # multiplier on scroll distance
 
 # Optional macOS-style smart zoom (off by default: a one-finger double tap is
 # easy to trigger by accident). Each double tap sends the next step, wrapping

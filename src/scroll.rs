@@ -1,16 +1,32 @@
-//! Scroll-start filter for the Magic Mouse.
+//! Wheel shaping for the Magic Mouse's one-finger scrolling.
 //!
-//! The kernel driver turns one-finger motion into wheel events after only
-//! ~1.3 mm of travel. A fingertip landing on the curved shell rolls a little
-//! before the hand actually moves, and that roll often points the other
-//! way, so a scroll regularly starts with a short jump in the wrong
-//! direction. The gate below holds the first wheel events of every touch,
-//! sums them, and only starts forwarding once the net movement on an axis
-//! is clearly in one direction. The opposite-direction part is dropped;
-//! after that the stream passes through untouched, so deliberate reversals
-//! still work.
+//! The kernel driver turns finger motion into wheel events, and the daemon
+//! re-emits them through the virtual mouse. Two things are fixed on the way:
+//!
+//! * **Direction debounce.** The driver starts scrolling after only ~1.3 mm
+//!   of travel, and a fingertip landing on the curved shell rolls about that
+//!   far before the hand moves, often the other way. The first wheel events
+//!   of every touch are held and summed; forwarding starts once the net
+//!   movement on an axis is clearly one way, and the opposite part is gone.
+//!
+//! * **Consistent resolution.** The driver emits low-resolution notches
+//!   (`REL_WHEEL`, one per ~1.4 mm, starting after 2.9 mm) and
+//!   high-resolution steps (`REL_WHEEL_HI_RES`, 1/10 notch per ~0.13 mm,
+//!   starting after 1.3 mm) from two separate counters, so they disagree and
+//!   a fast flick can produce a frame with notches but no hi-res step. When
+//!   that is the first wheel frame libinput ever sees from a device it
+//!   switches that device to "kernel bug" emulation for good, and from then
+//!   on scrolling feels different (whole notches instead of smooth steps).
+//!   Which mode you got depended on the first scroll after the mouse
+//!   connected. The shaper therefore ignores the driver's notches, keeps one
+//!   hi-res counter per axis, and emits both resolutions from it, hi-res
+//!   first in every frame.
+//!
+//! `mode = "notches"` releases movement in whole notches (what terminals and
+//! most apps treat as "scroll three lines"); `mode = "smooth"` releases every
+//! hi-res step as it comes. `speed` scales the movement before either.
 
-use crate::config::Scroll;
+use crate::config::{Scroll, ScrollMode};
 use evdev::{EventType, InputEvent, RelativeAxisCode};
 
 /// One wheel notch in high-resolution units (Linux convention).
@@ -18,14 +34,15 @@ pub const HI_RES_NOTCH: i32 = 120;
 
 #[derive(Debug, Default, Clone, Copy)]
 struct AxisGate {
-    /// Pending low-resolution (REL_WHEEL / REL_HWHEEL) sum.
-    lo: i32,
-    /// Pending high-resolution (REL_*_HI_RES) sum.
-    hi: i32,
+    /// Low-resolution notches seen from the driver while undecided (only
+    /// used when no hi-res step arrived at all, e.g. a hard flick).
+    lo_seen: i32,
+    /// Pending movement in hi-res units, already scaled by `speed`.
+    acc: f64,
     /// Direction decided for this touch (+1 / -1); `None` while holding.
     committed: Option<i32>,
-    /// Events held back and never forwarded (for the debug log only).
-    dropped: u32,
+    /// Events held so far (for the debug log only).
+    held: u32,
 }
 
 #[derive(Debug, Default)]
@@ -41,12 +58,12 @@ impl ScrollGate {
 
     /// A new touch started: forget the previous direction, hold again.
     pub fn reset(&mut self) {
+        // Leftover sub-notch movement is dropped too, so a new touch never
+        // releases a notch early because of the previous scroll.
         self.axes = [AxisGate::default(); 2];
     }
 
-    /// Feed one wheel event. Pushes the events to forward now into `out`
-    /// (none while the direction is still undecided, the accumulated net
-    /// movement once it is, the event itself afterwards).
+    /// Feed one wheel event. Pushes the events to forward now into `out`.
     pub fn feed(&mut self, ev: InputEvent, cfg: &Scroll, out: &mut Vec<InputEvent>) {
         let code = RelativeAxisCode(ev.code());
         let (axis, hi_res) = match code {
@@ -59,55 +76,67 @@ impl ScrollGate {
                 return;
             }
         };
-        if !cfg.direction_debounce {
-            out.push(ev);
-            return;
-        }
+        let speed = if cfg.speed > 0.0 { cfg.speed } else { 1.0 };
         let g = &mut self.axes[axis];
-        if g.committed.is_some() {
-            out.push(ev);
-            return;
-        }
         if hi_res {
-            g.hi += ev.value();
-        } else {
-            g.lo += ev.value();
+            g.acc += ev.value() as f64 * speed;
+        } else if g.committed.is_none() {
+            g.lo_seen += ev.value();
         }
-        g.dropped += 1;
-        let threshold = cfg.debounce_units.max(1);
-        let lo_threshold = (threshold + HI_RES_NOTCH - 1) / HI_RES_NOTCH;
-        let decided = if g.hi.abs() >= threshold {
-            Some(g.hi.signum())
-        } else if g.lo.abs() >= lo_threshold {
-            Some(g.lo.signum())
-        } else {
-            None
-        };
-        let Some(sign) = decided else { return };
-        g.committed = Some(sign);
-        log::debug!(
-            "scroll gate: {} axis locked {} after {} event(s), net lo={} hi={}",
-            if axis == 0 { "vertical" } else { "horizontal" },
-            if sign > 0 { "+" } else { "-" },
-            g.dropped,
-            g.lo,
-            g.hi
-        );
-        // Forward the net movement; anything that pointed the other way has
-        // cancelled out and is gone.
+        // After the decision the driver's own notches are ignored: they are
+        // regenerated from the hi-res counter below.
+
+        if g.committed.is_none() {
+            g.held += 1;
+            if !cfg.direction_debounce {
+                g.committed = Some(0);
+            } else {
+                let threshold = cfg.debounce_units.max(1) as f64;
+                let decided = if g.acc.abs() >= threshold {
+                    Some(g.acc.signum() as i32)
+                } else if g.acc == 0.0 && g.lo_seen != 0 {
+                    // A hard flick: the driver's hi-res counter missed the
+                    // first frame entirely. Use its notches instead.
+                    g.acc = (g.lo_seen * HI_RES_NOTCH) as f64 * speed;
+                    Some(g.lo_seen.signum())
+                } else {
+                    None
+                };
+                let Some(sign) = decided else { return };
+                g.committed = Some(sign);
+                log::debug!(
+                    "scroll gate: {} axis locked {} after {} event(s), net {:.0} hi-res units",
+                    if axis == 0 { "vertical" } else { "horizontal" },
+                    if sign > 0 { "+" } else { "-" },
+                    g.held,
+                    g.acc
+                );
+            }
+        }
+        g.lo_seen = 0;
+
         let (lo_code, hi_code) = if axis == 0 {
             (RelativeAxisCode::REL_WHEEL, RelativeAxisCode::REL_WHEEL_HI_RES)
         } else {
             (RelativeAxisCode::REL_HWHEEL, RelativeAxisCode::REL_HWHEEL_HI_RES)
         };
-        if g.lo != 0 {
-            out.push(InputEvent::new(EventType::RELATIVE.0, lo_code.0, g.lo));
+        match cfg.mode {
+            ScrollMode::Notches => {
+                let notches = (g.acc / HI_RES_NOTCH as f64).trunc() as i32;
+                if notches != 0 {
+                    g.acc -= (notches * HI_RES_NOTCH) as f64;
+                    out.push(InputEvent::new(EventType::RELATIVE.0, hi_code.0, notches * HI_RES_NOTCH));
+                    out.push(InputEvent::new(EventType::RELATIVE.0, lo_code.0, notches));
+                }
+            }
+            ScrollMode::Smooth => {
+                let units = g.acc.trunc() as i32;
+                if units != 0 {
+                    g.acc -= units as f64;
+                    out.push(InputEvent::new(EventType::RELATIVE.0, hi_code.0, units));
+                }
+            }
         }
-        if g.hi != 0 {
-            out.push(InputEvent::new(EventType::RELATIVE.0, hi_code.0, g.hi));
-        }
-        g.lo = 0;
-        g.hi = 0;
     }
 }
 
@@ -124,6 +153,8 @@ mod tests {
     fn values(out: &[InputEvent]) -> Vec<(u16, i32)> {
         out.iter().map(|e| (e.code(), e.value())).collect()
     }
+    const HI: u16 = RelativeAxisCode::REL_WHEEL_HI_RES.0;
+    const LO: u16 = RelativeAxisCode::REL_WHEEL.0;
 
     #[test]
     fn opposite_blip_at_start_is_dropped() {
@@ -135,17 +166,68 @@ mod tests {
             gate.feed(wheel_hi(-12), &cfg, &mut out);
         }
         assert!(out.is_empty(), "held while undecided");
-        // Real movement: 13 steps up (156 units).
+        // Real movement: 13 steps up (156 units); net reaches +120 at step 13.
         for _ in 0..13 {
             gate.feed(wheel_hi(12), &cfg, &mut out);
         }
-        // Net +120 reached at step 13; the blip is gone, nothing negative was sent.
-        assert!(out.iter().all(|e| e.value() > 0), "{:?}", values(&out));
-        assert_eq!(out.iter().map(|e| e.value()).sum::<i32>(), 120);
-        // Afterwards events pass through unchanged, including reversals.
+        assert_eq!(values(&out), vec![(HI, 120), (LO, 1)], "one notch, hi-res first, nothing negative");
+        // Afterwards a reversal is honoured once it adds up to a notch.
         out.clear();
-        gate.feed(wheel_hi(-12), &cfg, &mut out);
-        assert_eq!(values(&out), vec![(RelativeAxisCode::REL_WHEEL_HI_RES.0, -12)]);
+        for _ in 0..10 {
+            gate.feed(wheel_hi(-12), &cfg, &mut out);
+        }
+        assert_eq!(values(&out), vec![(HI, -120), (LO, -1)]);
+    }
+
+    #[test]
+    fn driver_notches_are_ignored_once_hi_res_flows() {
+        let cfg = Scroll::default();
+        let mut gate = ScrollGate::new();
+        let mut out = Vec::new();
+        for _ in 0..10 {
+            gate.feed(wheel_hi(12), &cfg, &mut out);
+        }
+        out.clear();
+        gate.feed(wheel_lo(1), &cfg, &mut out);
+        assert!(out.is_empty(), "driver notch must not be forwarded twice");
+    }
+
+    #[test]
+    fn hard_flick_without_hi_res_still_scrolls() {
+        let cfg = Scroll::default();
+        let mut gate = ScrollGate::new();
+        let mut out = Vec::new();
+        gate.feed(wheel_lo(-3), &cfg, &mut out);
+        assert_eq!(values(&out), vec![(HI, -360), (LO, -3)]);
+    }
+
+    #[test]
+    fn smooth_mode_forwards_each_step() {
+        let cfg = Scroll { mode: ScrollMode::Smooth, ..Scroll::default() };
+        let mut gate = ScrollGate::new();
+        let mut out = Vec::new();
+        for _ in 0..10 {
+            gate.feed(wheel_hi(12), &cfg, &mut out);
+        }
+        assert_eq!(values(&out), vec![(HI, 120)]);
+        out.clear();
+        gate.feed(wheel_hi(12), &cfg, &mut out);
+        assert_eq!(values(&out), vec![(HI, 12)]);
+    }
+
+    #[test]
+    fn speed_scales_movement() {
+        let cfg = Scroll { speed: 0.5, ..Scroll::default() };
+        let mut gate = ScrollGate::new();
+        let mut out = Vec::new();
+        for _ in 0..10 {
+            gate.feed(wheel_hi(12), &cfg, &mut out);
+        }
+        assert!(out.is_empty(), "60 scaled units is below the threshold");
+        for _ in 0..10 {
+            gate.feed(wheel_hi(12), &cfg, &mut out);
+        }
+        assert_eq!(values(&out), vec![(HI, 120), (LO, 1)]);
     }
 
     #[test]
@@ -156,7 +238,7 @@ mod tests {
         for _ in 0..10 {
             gate.feed(wheel_hi(12), &cfg, &mut out);
         }
-        assert_eq!(out.len(), 1);
+        assert_eq!(out.len(), 2);
         gate.reset();
         out.clear();
         gate.feed(wheel_hi(12), &cfg, &mut out);
@@ -164,21 +246,16 @@ mod tests {
     }
 
     #[test]
-    fn low_res_notch_decides_without_hi_res() {
-        let cfg = Scroll::default();
-        let mut gate = ScrollGate::new();
-        let mut out = Vec::new();
-        gate.feed(wheel_lo(-1), &cfg, &mut out);
-        assert_eq!(values(&out), vec![(RelativeAxisCode::REL_WHEEL.0, -1)]);
-    }
-
-    #[test]
-    fn disabled_passes_everything() {
+    fn debounce_off_still_shapes() {
         let cfg = Scroll { direction_debounce: false, ..Scroll::default() };
         let mut gate = ScrollGate::new();
         let mut out = Vec::new();
         gate.feed(wheel_hi(-12), &cfg, &mut out);
-        assert_eq!(out.len(), 1);
+        assert!(out.is_empty(), "notches mode waits for a whole notch");
+        for _ in 0..9 {
+            gate.feed(wheel_hi(-12), &cfg, &mut out);
+        }
+        assert_eq!(values(&out), vec![(HI, -120), (LO, -1)]);
     }
 
     #[test]
@@ -189,7 +266,7 @@ mod tests {
         for _ in 0..10 {
             gate.feed(wheel_hi(12), &cfg, &mut out);
         }
-        assert_eq!(out.len(), 1);
+        assert_eq!(out.len(), 2);
         out.clear();
         gate.feed(InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_HWHEEL_HI_RES.0, 12), &cfg, &mut out);
         assert!(out.is_empty(), "horizontal still undecided");

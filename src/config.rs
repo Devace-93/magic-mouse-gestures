@@ -117,6 +117,17 @@ impl Default for Pinch {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScrollMode {
+    /// Release movement in whole wheel notches (120 units). Apps treat a
+    /// notch as "scroll a few lines"; this is the classic mouse-wheel feel.
+    Notches,
+    /// Release every high-resolution step as it arrives (1/10 notch).
+    /// Smoother in browsers; terminals and some toolkits scroll faster.
+    Smooth,
+}
+
 /// One-finger scrolling (the wheel events the kernel driver synthesises).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -129,11 +140,16 @@ pub struct Scroll {
     /// Net movement, in high-resolution wheel units (120 = one notch),
     /// needed before the direction is decided and scrolling starts.
     pub debounce_units: i32,
+    /// How movement is released once the direction is decided.
+    pub mode: ScrollMode,
+    /// Multiplier on the scroll distance (1.0 = as the kernel driver
+    /// reports it, about one notch per 1.3 mm of finger travel).
+    pub speed: f64,
 }
 
 impl Default for Scroll {
     fn default() -> Self {
-        Self { direction_debounce: true, debounce_units: 120 }
+        Self { direction_debounce: true, debounce_units: 120, mode: ScrollMode::Notches, speed: 1.0 }
     }
 }
 
