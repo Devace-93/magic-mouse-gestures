@@ -1,0 +1,20 @@
+[package]
+name = "magic-mouse-gestures"
+version = "0.1.0"
+edition = "2021"
+description = "Userspace driver that turns Apple Magic Mouse multitouch into native desktop gestures (workspace swipes, taps) on Linux/Wayland."
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+evdev = { version = "0.13", features = ["serde"] }
+libc = "0.2"
+log = "0.4"
+env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[profile.release]
+opt-level = 2
+lto = true
+strip = true
