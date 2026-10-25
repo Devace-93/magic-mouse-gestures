@@ -39,16 +39,17 @@ DEFAULTS = {
         {"kind": "double_tap", "fingers": 2, "enabled": True, "action": {"type": "key", "combo": "super+w"}},
         {"kind": "tap", "fingers": 3, "enabled": True, "action": {"type": "key", "combo": "super+a"}},
         {"kind": "double_tap", "fingers": 1, "enabled": True,
-         "action": {"type": "toggle", "on": "ctrl+kpplus,ctrl+kpplus,ctrl+kpplus", "off": "ctrl+0"}},
+         "action": {"type": "cycle", "steps": ["ctrl+kpplus,ctrl+kpplus", "ctrl+kpplus,ctrl+kpplus", "ctrl+kpplus", "ctrl+0"]}},
     ],
 }
 
 KINDS = [("swipe", "Swipe"), ("tap", "Tap"), ("double_tap", "Double tap")]
 DIRS = [("left", "Left"), ("right", "Right"), ("up", "Up"), ("down", "Down")]
-ACTIONS = [("key", "Keyboard shortcut"), ("toggle", "Toggle two shortcuts"), ("button", "Mouse button"), ("command", "Run command")]
+ACTIONS = [("key", "Keyboard shortcut"), ("toggle", "Toggle two shortcuts"), ("cycle", "Cycle through shortcuts"), ("button", "Mouse button"), ("command", "Run command")]
 ACTION_HINT = {
     "key": "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal",
     "toggle": "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "cycle": "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
     "button": "left, right or middle",
     "command": "shell command, e.g. notify-send hi",
 }
@@ -74,6 +75,8 @@ def load_config() -> dict:
 
 
 def _toml_value(v) -> str:
+    if isinstance(v, list):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
     if isinstance(v, bool):
         return "true" if v else "false"
     if isinstance(v, (int, float)):
@@ -125,6 +128,8 @@ def describe_action(a: dict) -> str:
         return f"Shortcut: {a.get('combo', '')}"
     if t == "toggle":
         return f"Toggle: {a.get('on', '')}  ⇄  {a.get('off', '')}"
+    if t == "cycle":
+        return "Cycle: " + "  →  ".join(a.get("steps", []))
     if t == "button":
         return f"Click: {a.get('button', '')}"
     if t == "command":
@@ -233,6 +238,8 @@ class GestureDialog(Adw.Dialog):
 
     def _action_value(self):
         a = self.g["action"]
+        if a.get("type") == "cycle":
+            return " ; ".join(a.get("steps", []))
         return a.get("combo") or a.get("on") or a.get("button") or a.get("command") or ""
 
     def _set_kind(self, k):
@@ -248,11 +255,13 @@ class GestureDialog(Adw.Dialog):
 
     def _save(self, *_):
         t = self.g["action"]["type"]
-        key = {"key": "combo", "toggle": "on", "button": "button", "command": "command"}[t]
+        key = {"key": "combo", "toggle": "on", "cycle": "steps", "button": "button", "command": "command"}[t]
         value = self.value_row.get_text().strip()
         if not value:
             self.value_row.add_css_class("error")
             return
+        if t == "cycle":
+            value = [p.strip() for p in value.split(";") if p.strip()]
         self.g["action"] = {"type": t, key: value}
         if t == "toggle":
             off = self.off_row.get_text().strip()
