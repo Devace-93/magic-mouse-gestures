@@ -11,7 +11,6 @@ Out of the box:
 | 2-finger pinch             | Native pinch zoom in apps that support it (browsers, viewers) |
 | 2-finger double tap        | Show the workspaces (`Super+W` on COSMIC, `Super` on GNOME)   |
 | 3-finger tap               | Show all applications (`Super+A` app library / app grid)      |
-| 1-finger double tap        | Smart zoom: cycles the app through 125% → 175% → 200% → 100% (`Ctrl+KP_Plus` presets, `Ctrl+0` reset); position remembered per app |
 | 1-finger scroll, clicks    | Unchanged (handled by the kernel `hid-magicmouse` driver)     |
 
 Extra taps and swipes (3 fingers, vertical swipes, ...) can be mapped to
@@ -99,8 +98,9 @@ action = { type = "key", combo = "super+w" }
 enabled = true
 sensitivity = 1.5       # zoom aggressiveness
 
-# Smart zoom levels: each double tap sends the next step, wrapping around.
-# (Browsers step 100 -> 110 -> 125 -> 150 -> 175 -> 200 per Ctrl+KP_Plus.)
+# Optional macOS-style smart zoom (off by default: a one-finger double tap is
+# easy to trigger by accident). Each double tap sends the next step, wrapping
+# around; browsers step 100 -> 110 -> 125 -> 150 -> 175 -> 200 per Ctrl+KP_Plus.
 [[gesture]]
 kind = "double_tap"
 fingers = 1
