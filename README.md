@@ -11,7 +11,7 @@ Out of the box:
 | 2-finger pinch             | Native pinch zoom in apps that support it (browsers, viewers) |
 | 2-finger double tap        | Show the workspaces (`Super+W` on COSMIC, `Super` on GNOME)   |
 | 3-finger tap               | Show all applications (`Super+A` app library / app grid)      |
-| 1-finger scroll, clicks    | Unchanged (handled by the kernel `hid-magicmouse` driver)     |
+| 1-finger scroll, clicks    | Unchanged, except the backwards jump a scroll often starts with is filtered out |
 
 Extra taps and swipes (3 fingers, vertical swipes, ...) can be mapped to
 shortcuts, mouse buttons or commands in the config file, optionally only for
@@ -24,7 +24,10 @@ desktops ignore that because the device is a *mouse*, not a touchpad. This
 daemon:
 
 1. Grabs the mouse's evdev node and re-emits pointer motion, buttons and
-   wheel events through a virtual mouse, so everything keeps working.
+   wheel events through a virtual mouse, so everything keeps working. The
+   first wheel events of each touch are held until the net movement clearly
+   points one way, which removes the short backwards jump the kernel driver
+   produces while the fingertip settles on the shell.
 2. Decodes the finger positions from the raw HID reports (`/dev/hidrawN`,
    same layout the kernel driver uses). It falls back to the driver's evdev
    multitouch events when hidraw is not accessible; note that the popular DKMS
@@ -97,6 +100,15 @@ action = { type = "key", combo = "super+w" }
 [pinch]
 enabled = true
 sensitivity = 1.5       # zoom aggressiveness
+
+# One-finger scrolling starts with a short jump the wrong way on a Magic
+# Mouse: the kernel driver begins scrolling after ~1.3 mm of travel, and a
+# fingertip landing on the curved shell rolls about that far before the hand
+# moves. The daemon holds the first wheel events of each touch until the net
+# movement is clearly one way (120 units = one notch) and drops the rest.
+[scroll]
+direction_debounce = true
+debounce_units = 120    # raise if a scroll still starts backwards, lower if it starts late
 
 # Optional macOS-style smart zoom (off by default: a one-finger double tap is
 # easy to trigger by accident). Each double tap sends the next step, wrapping

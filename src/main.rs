@@ -11,6 +11,7 @@ mod config;
 mod engine;
 mod focus;
 mod hidraw;
+mod scroll;
 mod virt;
 
 use anyhow::{Context, Result};

@@ -5,6 +5,7 @@
 use crate::config::{Action, Axis, Config, Direction, GestureKind, SwipeDir};
 use crate::focus::Focus;
 use crate::hidraw::RawTouch;
+use crate::scroll::ScrollGate;
 use crate::virt::{VirtualKeyboard, VirtualMouse, VirtualTouchpad};
 use anyhow::Result;
 use evdev::{AbsoluteAxisCode, EventType, InputEvent, RelativeAxisCode};
@@ -116,6 +117,10 @@ pub struct Engine {
     /// When true, touch data comes from `handle_touch_frame` (hidraw) and
     /// evdev ABS events are ignored.
     hidraw_mode: bool,
+    /// Scroll-start filter (see `scroll.rs`).
+    scroll: ScrollGate,
+    /// Scratch buffer for events the gate releases.
+    scroll_out: Vec<InputEvent>,
 }
 
 impl Engine {
@@ -148,6 +153,8 @@ impl Engine {
             last_speed: 0.0,
             history: std::collections::VecDeque::with_capacity(16),
             hidraw_mode: false,
+            scroll: ScrollGate::new(),
+            scroll_out: Vec::new(),
         }
     }
 
@@ -210,10 +217,17 @@ impl Engine {
                         | RelativeAxisCode::REL_HWHEEL_HI_RES
                 );
                 if is_wheel {
-                    let limit = self.cfg.read().unwrap().general.suppress_scroll_from_fingers as usize;
+                    let cfg = self.cfg.read().unwrap();
+                    let limit = cfg.general.suppress_scroll_from_fingers as usize;
                     if limit > 0 && self.finger_count >= limit {
                         return Ok(());
                     }
+                    self.scroll_out.clear();
+                    self.scroll.feed(ev, &cfg.scroll, &mut self.scroll_out);
+                    for e in self.scroll_out.drain(..) {
+                        self.mouse.push(e);
+                    }
+                    return Ok(());
                 }
                 self.mouse.push(ev);
             }
@@ -387,6 +401,10 @@ impl Engine {
         }
 
         let spread = self.spread_mm(c);
+        if self.session.is_none() {
+            // New touch: decide the scroll direction afresh.
+            self.scroll.reset();
+        }
         let mut session = match self.session.take() {
             None => Session {
                 start: now,

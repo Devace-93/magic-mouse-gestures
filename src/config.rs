@@ -12,6 +12,7 @@ pub struct Config {
     pub general: General,
     pub workspace_swipe: WorkspaceSwipe,
     pub pinch: Pinch,
+    pub scroll: Scroll,
     pub taps: Taps,
     #[serde(rename = "gesture")]
     pub gestures: Vec<GestureRule>,
@@ -116,6 +117,26 @@ impl Default for Pinch {
     }
 }
 
+/// One-finger scrolling (the wheel events the kernel driver synthesises).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Scroll {
+    /// Hold the first wheel events of every touch until the net movement
+    /// clearly points one way, dropping the opposite-direction part. Removes
+    /// the short backwards jump a scroll often starts with (the fingertip
+    /// rolls on the shell as it lands).
+    pub direction_debounce: bool,
+    /// Net movement, in high-resolution wheel units (120 = one notch),
+    /// needed before the direction is decided and scrolling starts.
+    pub debounce_units: i32,
+}
+
+impl Default for Scroll {
+    fn default() -> Self {
+        Self { direction_debounce: true, debounce_units: 120 }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Taps {
@@ -207,6 +228,7 @@ impl Default for Config {
             general: General::default(),
             workspace_swipe: WorkspaceSwipe::default(),
             pinch: Pinch::default(),
+            scroll: Scroll::default(),
             taps: Taps::default(),
             gestures: vec![
                 GestureRule {
