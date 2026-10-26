@@ -41,7 +41,12 @@ class Mousetouch < Formula
         sudo modprobe uinput && sudo udevadm control --reload-rules && sudo udevadm trigger
       Then start it in the background:
         brew services start mousetouch
-      The settings app needs python3-gi, GTK 4 and libadwaita from your distribution.
+      The settings app needs python3-gi, python3-gi-cairo, GTK 4 and libadwaita from
+      your distribution. Desktops do not look in Homebrew's share/applications, so
+      add a user entry once to get it in the app menu:
+        mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/scalable/apps
+        sed "s|^Exec=.*|Exec=#{opt_bin}/mousetouch-settings|" #{opt_share}/applications/io.github.Devace_93.MouseTouch.desktop > ~/.local/share/applications/io.github.Devace_93.MouseTouch.desktop
+        ln -sf #{opt_share}/icons/hicolor/scalable/apps/io.github.Devace_93.MouseTouch.svg ~/.local/share/icons/hicolor/scalable/apps/
     EOS
   end
 

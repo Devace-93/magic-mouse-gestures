@@ -79,7 +79,7 @@ curl -fsSL https://raw.githubusercontent.com/Devace-93/mousetouch/main/get.sh | 
 | Debian, Ubuntu, Pop!_OS | `sudo apt install ./mousetouch_<version>_amd64.deb` (or `_arm64`) |
 | Fedora, openSUSE | `sudo dnf install ./mousetouch-<version>.x86_64.rpm` |
 | Arch | AUR: `yay -S mousetouch-git` |
-| Homebrew on Linux | `brew trust Devace-93/tap` once (recent Homebrew asks this for third-party taps), then `brew install Devace-93/tap/mousetouch` and follow the printed caveats for the udev rule |
+| Homebrew on Linux | `brew trust Devace-93/tap` once (recent Homebrew asks this for third-party taps), then `brew install Devace-93/tap/mousetouch` and follow the printed caveats (udev rule, app-menu entry for the settings app) |
 | NixOS / Nix | `nix profile install github:Devace-93/mousetouch`, or import `nixosModules.default` and set `services.mousetouch.enable = true` |
 | Rust toolchain | `cargo install mousetouch` (binary only; install the udev rule from `packaging/` by hand) |
 | Any, static tarball | `mousetouch-<version>-<arch>-linux.tar.gz` contains the binary, the settings app and the files `get.sh` installs |
