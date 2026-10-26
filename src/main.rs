@@ -7,11 +7,14 @@
 //! and finger tracking) drive workspace switching. Taps and discrete swipes
 //! map to keyboard shortcuts, buttons or commands.
 
+mod bluetooth;
 mod config;
 mod engine;
 mod focus;
 mod hidraw;
+mod monitor;
 mod scroll;
+mod sticky;
 mod virt;
 
 use anyhow::{Context, Result};
@@ -35,6 +38,17 @@ Commands:
   run                 Run the daemon (default)
   probe               List matching devices and their touch calibration
   watch               Like probe, then print live finger positions (Ctrl-C to stop)
+  events              Print the running daemon's event stream (fingers, gestures,
+                      scroll, buttons) as JSON lines; what the settings app draws
+  bt-check [NAME]     Is the mouse's Bluetooth pairing healthy? (exit 3 = stale
+                      pairing after it was paired with a Mac, 4 = not paired)
+  bt-repair [NAME] [SECONDS]
+                      Remove the mouse from BlueZ and pair it again (asks you
+                      to switch it off and on). NAME = part of its Bluetooth
+                      name, default the config's device_match
+  sticky APP_ID [TITLE] [on|off]
+                      Keep a window on every workspace (COSMIC only); used by the
+                      settings app for its live view. `sticky list` prints windows
   demo-swipe DIR [MM] Replay a synthetic swipe on the virtual touchpad
                       (DIR = left|right|up|down, MM = travel, default 40)
   print-config        Print the effective configuration as TOML
@@ -83,6 +97,20 @@ fn main() -> Result<()> {
         "run" => run(&config_path),
         "probe" => probe(&config_path, false),
         "watch" => probe(&config_path, true),
+        "events" => monitor::print_events(),
+        "bt-check" | "bt-repair" => {
+            let name = match rest.first() {
+                Some(n) => n.clone(),
+                None => config::load(&config_path).map(|c| c.general.device_match).unwrap_or_else(|_| config::General::default().device_match),
+            };
+            if cmd == "bt-check" {
+                bluetooth::check(&name)
+            } else {
+                let secs = rest.get(1).and_then(|s| s.parse().ok()).unwrap_or(90);
+                bluetooth::repair(&name, Duration::from_secs(secs))
+            }
+        }
+        "sticky" => sticky_cmd(&rest),
         "demo-swipe" => demo_swipe(&rest),
         "fake-mouse" => fake_mouse(
             rest.first().map(String::as_str).unwrap_or("all"),
@@ -137,6 +165,7 @@ fn run(config_path: &Path) -> Result<()> {
     let compositor_natural = config::detect_compositor_natural_scroll();
     log::info!("compositor touchpad natural scroll: {compositor_natural}");
     let focus = focus::spawn();
+    let monitor = monitor::Monitor::start();
 
     let active: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
     let mut last_mtime = std::fs::metadata(config_path).and_then(|m| m.modified()).ok();
@@ -165,14 +194,16 @@ fn run(config_path: &Path) -> Result<()> {
             let shared = Arc::clone(&shared);
             let active = Arc::clone(&active);
             let focus = Arc::clone(&focus);
+            let monitor = monitor.clone();
             thread::spawn(move || {
                 let name = dev.name().unwrap_or("?").to_string();
                 log::info!("attached {} ({})", name, path.display());
-                if let Err(e) = serve_device(&path, dev, cfg, shared, compositor_natural, focus) {
+                if let Err(e) = serve_device(&path, dev, cfg, shared, compositor_natural, focus, monitor.clone()) {
                     log::warn!("{} detached: {e:#}", name);
                 } else {
                     log::info!("{} detached", name);
                 }
+                monitor.set_device(None);
                 active.lock().unwrap().remove(&path);
             });
         }
@@ -180,7 +211,15 @@ fn run(config_path: &Path) -> Result<()> {
     }
 }
 
-fn serve_device(path: &Path, mut dev: Device, cfg: Arc<RwLock<Config>>, shared: Arc<Mutex<Shared>>, compositor_natural: bool, focus: focus::Focus) -> Result<()> {
+fn serve_device(
+    path: &Path,
+    mut dev: Device,
+    cfg: Arc<RwLock<Config>>,
+    shared: Arc<Mutex<Shared>>,
+    compositor_natural: bool,
+    focus: focus::Focus,
+    monitor: monitor::Monitor,
+) -> Result<()> {
     // Magic Mouse 2 geometry from hid-magicmouse, used only if the driver
     // reports no resolution.
     let ax = axis_info(&dev, AbsoluteAxisCode::ABS_MT_POSITION_X, 26.0)?;
@@ -193,16 +232,18 @@ fn serve_device(path: &Path, mut dev: Device, cfg: Arc<RwLock<Config>>, shared: 
     dev.grab().context("grabbing device (EVIOCGRAB)")?;
     dev.set_nonblocking(true)?;
 
-    let mut engine = Engine::new(cfg, shared, mouse, ax, ay, compositor_natural, focus);
+    let mut engine = Engine::new(cfg, shared, mouse, ax, ay, compositor_natural, focus, monitor.clone());
 
     // Prefer raw HID reports for touch data (see hidraw.rs for why).
     let mut raw: Option<std::fs::File> = None;
+    let mut source = "evdev";
     match hidraw::hidraw_for_event(path) {
         Some(raw_path) => match std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(&raw_path) {
             Ok(f) => {
                 log::info!("touch data from {}", raw_path.display());
                 engine.set_hidraw_mode(true);
                 raw = Some(f);
+                source = "hidraw";
             }
             Err(e) => log::warn!(
                 "cannot open {} ({e}); falling back to evdev multitouch, which is broken with the DKMS hid-magicmouse. Install the udev rule from packaging/.",
@@ -211,6 +252,12 @@ fn serve_device(path: &Path, mut dev: Device, cfg: Arc<RwLock<Config>>, shared: 
         },
         None => log::warn!("no hidraw node found for {}; using evdev multitouch", path.display()),
     }
+    monitor.set_device(Some(monitor::Event::Device {
+        name: dev.name().unwrap_or("Magic Mouse").to_string(),
+        w_mm: (ax.max - ax.min) as f64 / ax.res,
+        h_mm: (ay.max - ay.min) as f64 / ay.res,
+        source,
+    }));
 
     let fd = dev.as_raw_fd();
     let raw_fd = raw.as_ref().map(|f| f.as_raw_fd()).unwrap_or(-1);
@@ -336,6 +383,39 @@ fn probe(config_path: &Path, watch: bool) -> Result<()> {
     }
 }
 
+/// `sticky APP_ID [TITLE] [on|off]`. Exit status 2 when the compositor has no
+/// such request, so the settings app can tell "unsupported" from "no window".
+fn sticky_cmd(args: &[String]) -> Result<()> {
+    let app_id = args.first().context("sticky needs an app id (or `list`), e.g. io.github.Devace_93.MouseTouch")?;
+    if app_id == "list" {
+        return sticky::list();
+    }
+    let mut rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
+    let on = match rest.last() {
+        Some(&"off") => {
+            rest.pop();
+            false
+        }
+        Some(&"on") => {
+            rest.pop();
+            true
+        }
+        _ => true,
+    };
+    let title = rest.first().copied();
+    match sticky::set_sticky(app_id, title, on)? {
+        sticky::Outcome::Unsupported(why) => {
+            eprintln!("{why}");
+            std::process::exit(2);
+        }
+        sticky::Outcome::Changed(0) => anyhow::bail!(
+            "no window with app id {app_id}{} found",
+            title.map(|t| format!(" and title \"{t}\"")).unwrap_or_default()
+        ),
+        sticky::Outcome::Changed(_) => Ok(()),
+    }
+}
+
 fn demo_swipe(args: &[String]) -> Result<()> {
     let dir = args.first().map(String::as_str).unwrap_or("left");
     let mm: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(40.0);
@@ -373,8 +453,11 @@ fn fake_mouse(what: &str, repeat: usize) -> Result<()> {
     rels.insert(RelativeAxisCode::REL_X);
     rels.insert(RelativeAxisCode::REL_Y);
     rels.insert(RelativeAxisCode::REL_WHEEL);
+    // MOUSETOUCH_FAKE_NAME lets tests pick a name that only a test config
+    // matches, so another daemon on the machine leaves the fake mouse alone.
+    let name = std::env::var("MOUSETOUCH_FAKE_NAME").unwrap_or_else(|_| "Fake Magic Mouse".into());
     let mut dev = VirtualDevice::builder()?
-        .name("Fake Magic Mouse")
+        .name(&name)
         .input_id(InputId::new(BusType::BUS_BLUETOOTH, 0x004c, 0x0269, 0x0311))
         .with_keys(&keys)?
         .with_relative_axes(&rels)?

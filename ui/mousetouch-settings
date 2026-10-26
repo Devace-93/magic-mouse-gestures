@@ -5,21 +5,31 @@ Edits ~/.config/mousetouch/config.toml. The daemon watches the file
 and reloads on every save, so changes apply immediately.
 
 Theme and language follow the desktop by default and can be overridden
-from the Appearance group; those two preferences live in ui.toml next to the
+from the Appearance group; those preferences live in ui.toml next to the
 config so the daemon never sees them.
+
+The live view at the top draws what the daemon sees on the mouse (fingers,
+taps, swipes, pinch, scrolling, clicks) from the daemon's event stream.
 """
+import json
 import locale
+import math
 import os
+import shutil
+import socket
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
+import cairo
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+gi.require_version("PangoCairo", "1.0")
+from gi.repository import Adw, Gio, GLib, Gtk, Pango, PangoCairo  # noqa: E402
 
 APP_ID = "io.github.Devace_93.MouseTouch"
 SERVICE = "mousetouch.service"
@@ -59,7 +69,7 @@ CATALOG: dict[str, dict[str, str]] = {"en": {}}
 
 
 def load_ui_prefs() -> dict:
-    prefs = {"theme": "system", "language": "system"}
+    prefs = {"theme": "system", "language": "system", "live_pinned": False}
     try:
         with open(UI_PREFS_PATH, "rb") as f:
             data = tomllib.load(f)
@@ -70,6 +80,8 @@ def load_ui_prefs() -> dict:
     lang = data.get("language")
     if lang == "system" or lang in LANG_CODES:
         prefs["language"] = lang
+    if isinstance(data.get("live_pinned"), bool):
+        prefs["live_pinned"] = data["live_pinned"]
     return prefs
 
 
@@ -79,6 +91,7 @@ def save_ui_prefs(prefs: dict) -> None:
         "# mousetouch settings app preferences (not read by the daemon)\n"
         f'theme = "{prefs["theme"]}"        # system, light or dark\n'
         f'language = "{prefs["language"]}"  # system or a locale code like es-MX\n'
+        f'live_pinned = {"true" if prefs.get("live_pinned") else "false"}  # keep the live window on every workspace\n'
     )
     tmp = UI_PREFS_PATH.with_suffix(".toml.tmp")
     tmp.write_text(body)
@@ -173,6 +186,50 @@ CATALOG["es"] = {
     "Horizontal": "Horizontal", "Vertical": "Vertical", "Both": "Ambos", "Auto-detect": "Autodetectar", "On": "Activado", "Off": "Desactivado",
     "Whole notches": "Muescas enteras", "Smooth steps": "Pasos suaves", "System": "Sistema", "Light": "Claro", "Dark": "Oscuro",
     "Could not save: {error}": "No se pudo guardar: {error}",
+    "Live view": "Vista en vivo",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Lo que el servicio detecta en el mouse en tiempo real: dedos, toques, deslizamientos, pellizco, desplazamiento y clics.",
+    "Open in its own window": "Abrir en su propia ventana",
+    "MouseTouch · Live": "MouseTouch · En vivo",
+    "Keep on screen": "Mantener en pantalla",
+    "Stays visible while workspaces slide (sticky window)": "Sigue visible al cambiar de escritorio (ventana fija)",
+    "Clear log": "Limpiar registro",
+    "Daemon not running": "El servicio no está en ejecución",
+    "Start the background service (mousetouch.service)": "Inicia el servicio en segundo plano (mousetouch.service)",
+    "No Magic Mouse connected": "No hay ningún Magic Mouse conectado",
+    "Waiting for a touch…": "Esperando un toque…",
+    "Pinned: the window stays on screen while workspaces slide": "Fijada: la ventana permanece en pantalla al cambiar de escritorio",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Tu escritorio no permite que las apps fijen ventanas. Usa el menú de la ventana: COSMIC → Sticky, GNOME → Siempre en el área de trabajo visible, KDE → Todos los escritorios.",
+    "Could not run mousetouch: {error}": "No se pudo ejecutar mousetouch: {error}",
+    "Pinch": "Pellizco",
+    "1 finger": "1 dedo",
+    "{n} fingers": "{n} dedos",
+    "no rule": "sin regla",
+    "not a tap: {reason}": "no es un toque: {reason}",
+    "a gesture ran": "se ejecutó un gesto",
+    "button pressed": "botón presionado",
+    "too long": "demasiado largo",
+    "moved too far": "se movió demasiado",
+    "lifted while moving": "se levantó en movimiento",
+    "Scroll": "Desplazamiento",
+    "Click": "Clic",
+    "Mouse attached: {name}": "Mouse conectado: {name}",
+    "Mouse detached": "Mouse desconectado",
+    "Connected to the daemon": "Conectado al servicio",
+    "Daemon disconnected": "Servicio desconectado",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Emparejamiento del mouse",
+    "Forget and pair again": "Olvidar y emparejar de nuevo",
+    "Paired and bonded": "Emparejado y vinculado",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Emparejamiento obsoleto: el mouse se rechaza hasta que se empareje de nuevo (ocurre tras emparejarlo con un Mac)",
+    "Not paired": "No emparejado",
+    "Checking…": "Comprobando…",
+    "Bluetooth status unavailable": "Estado de Bluetooth no disponible",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "¿Quitar el mouse de Bluetooth y emparejarlo desde cero? Cuando se te indique, apaga y enciende el mouse.",
+    "Pair again": "Emparejar de nuevo",
+    "Switch the mouse off and on": "Apaga y enciende el mouse",
+    "Working…": "Procesando…",
+    "Paired again": "Emparejado de nuevo",
+    "Pairing failed: {error}": "Error al emparejar: {error}",
 }
 
 CATALOG["fr"] = {
@@ -222,6 +279,50 @@ CATALOG["fr"] = {
     "Horizontal": "Horizontal", "Vertical": "Vertical", "Both": "Les deux", "Auto-detect": "Détection automatique", "On": "Activé", "Off": "Désactivé",
     "Whole notches": "Crans entiers", "Smooth steps": "Pas fluides", "System": "Système", "Light": "Clair", "Dark": "Sombre",
     "Could not save: {error}": "Impossible d'enregistrer : {error}",
+    "Live view": "Vue en direct",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Ce que le service détecte sur la souris en temps réel : doigts, tapes, balayages, pincement, défilement et clics.",
+    "Open in its own window": "Ouvrir dans une fenêtre séparée",
+    "MouseTouch · Live": "MouseTouch · Direct",
+    "Keep on screen": "Garder à l'écran",
+    "Stays visible while workspaces slide (sticky window)": "Reste visible lors du changement d'espace de travail (fenêtre épinglée)",
+    "Clear log": "Effacer le journal",
+    "Daemon not running": "Le service n'est pas lancé",
+    "Start the background service (mousetouch.service)": "Démarrez le service en arrière-plan (mousetouch.service)",
+    "No Magic Mouse connected": "Aucune Magic Mouse connectée",
+    "Waiting for a touch…": "En attente d'un toucher…",
+    "Pinned: the window stays on screen while workspaces slide": "Épinglée : la fenêtre reste à l'écran lors du changement d'espace de travail",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Votre bureau ne permet pas aux applications d'épingler des fenêtres. Utilisez le menu de la fenêtre : COSMIC → Sticky, GNOME → Toujours sur l'espace de travail visible, KDE → Tous les bureaux.",
+    "Could not run mousetouch: {error}": "Impossible de lancer mousetouch : {error}",
+    "Pinch": "Pincement",
+    "1 finger": "1 doigt",
+    "{n} fingers": "{n} doigts",
+    "no rule": "aucune règle",
+    "not a tap: {reason}": "pas une tape : {reason}",
+    "a gesture ran": "un geste a été exécuté",
+    "button pressed": "bouton enfoncé",
+    "too long": "trop long",
+    "moved too far": "déplacement trop grand",
+    "lifted while moving": "relâché en mouvement",
+    "Scroll": "Défilement",
+    "Click": "Clic",
+    "Mouse attached: {name}": "Souris connectée : {name}",
+    "Mouse detached": "Souris déconnectée",
+    "Connected to the daemon": "Connecté au service",
+    "Daemon disconnected": "Service déconnecté",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Appairage de la souris",
+    "Forget and pair again": "Oublier et réappairer",
+    "Paired and bonded": "Appairée et liée",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Appairage obsolète : la souris est refusée jusqu'à ce qu'elle soit réappairée (se produit après l'avoir appairée avec un Mac)",
+    "Not paired": "Non appairée",
+    "Checking…": "Vérification…",
+    "Bluetooth status unavailable": "État Bluetooth indisponible",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Retirer la souris du Bluetooth et la réappairer depuis zéro ? À la demande, éteignez puis rallumez la souris.",
+    "Pair again": "Réappairer",
+    "Switch the mouse off and on": "Éteignez puis rallumez la souris",
+    "Working…": "En cours…",
+    "Paired again": "Souris réappairée",
+    "Pairing failed: {error}": "Échec de l'appairage : {error}",
 }
 
 CATALOG["de"] = {
@@ -271,6 +372,50 @@ CATALOG["de"] = {
     "Horizontal": "Horizontal", "Vertical": "Vertikal", "Both": "Beide", "Auto-detect": "Automatisch erkennen", "On": "An", "Off": "Aus",
     "Whole notches": "Ganze Rasten", "Smooth steps": "Fließende Schritte", "System": "System", "Light": "Hell", "Dark": "Dunkel",
     "Could not save: {error}": "Konnte nicht speichern: {error}",
+    "Live view": "Live-Ansicht",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Was der Dienst auf der Maus in Echtzeit erkennt: Finger, Tippen, Wischen, Zusammenziehen, Scrollen und Klicks.",
+    "Open in its own window": "In eigenem Fenster öffnen",
+    "MouseTouch · Live": "MouseTouch · Live",
+    "Keep on screen": "Auf dem Bildschirm behalten",
+    "Stays visible while workspaces slide (sticky window)": "Bleibt beim Wechsel der Arbeitsfläche sichtbar (angeheftetes Fenster)",
+    "Clear log": "Protokoll leeren",
+    "Daemon not running": "Dienst läuft nicht",
+    "Start the background service (mousetouch.service)": "Hintergrunddienst starten (mousetouch.service)",
+    "No Magic Mouse connected": "Keine Magic Mouse verbunden",
+    "Waiting for a touch…": "Warte auf eine Berührung…",
+    "Pinned: the window stays on screen while workspaces slide": "Angeheftet: Das Fenster bleibt beim Wechsel der Arbeitsfläche sichtbar",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Dein Desktop erlaubt Apps nicht, Fenster anzuheften. Nutze stattdessen das Fenstermenü: COSMIC → Sticky, GNOME → Immer auf der sichtbaren Arbeitsfläche, KDE → Alle Arbeitsflächen.",
+    "Could not run mousetouch: {error}": "mousetouch konnte nicht gestartet werden: {error}",
+    "Pinch": "Zusammenziehen",
+    "1 finger": "1 Finger",
+    "{n} fingers": "{n} Finger",
+    "no rule": "keine Regel",
+    "not a tap: {reason}": "kein Tippen: {reason}",
+    "a gesture ran": "eine Geste wurde ausgeführt",
+    "button pressed": "Taste gedrückt",
+    "too long": "zu lang",
+    "moved too far": "zu weit bewegt",
+    "lifted while moving": "in Bewegung abgehoben",
+    "Scroll": "Scrollen",
+    "Click": "Klick",
+    "Mouse attached: {name}": "Maus verbunden: {name}",
+    "Mouse detached": "Maus getrennt",
+    "Connected to the daemon": "Mit dem Dienst verbunden",
+    "Daemon disconnected": "Dienst getrennt",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Maus-Kopplung",
+    "Forget and pair again": "Entfernen und neu koppeln",
+    "Paired and bonded": "Gekoppelt und verbunden",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Veraltete Kopplung: Die Maus wird abgelehnt, bis sie neu gekoppelt wird (passiert nach dem Koppeln mit einem Mac)",
+    "Not paired": "Nicht gekoppelt",
+    "Checking…": "Wird geprüft…",
+    "Bluetooth status unavailable": "Bluetooth-Status nicht verfügbar",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Maus aus Bluetooth entfernen und neu koppeln? Schalten Sie die Maus aus und wieder ein, wenn Sie dazu aufgefordert werden.",
+    "Pair again": "Neu koppeln",
+    "Switch the mouse off and on": "Maus aus- und wieder einschalten",
+    "Working…": "Wird ausgeführt…",
+    "Paired again": "Neu gekoppelt",
+    "Pairing failed: {error}": "Kopplung fehlgeschlagen: {error}",
 }
 
 CATALOG["it"] = {
@@ -320,6 +465,50 @@ CATALOG["it"] = {
     "Horizontal": "Orizzontale", "Vertical": "Verticale", "Both": "Entrambi", "Auto-detect": "Rilevamento automatico", "On": "Attivo", "Off": "Disattivo",
     "Whole notches": "Scatti interi", "Smooth steps": "Passi fluidi", "System": "Sistema", "Light": "Chiaro", "Dark": "Scuro",
     "Could not save: {error}": "Impossibile salvare: {error}",
+    "Live view": "Vista in tempo reale",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Ciò che il servizio rileva sul mouse in tempo reale: dita, tocchi, scorrimenti, pizzico, scroll e clic.",
+    "Open in its own window": "Apri in una finestra separata",
+    "MouseTouch · Live": "MouseTouch · Live",
+    "Keep on screen": "Mantieni sullo schermo",
+    "Stays visible while workspaces slide (sticky window)": "Resta visibile quando cambi spazio di lavoro (finestra fissa)",
+    "Clear log": "Svuota registro",
+    "Daemon not running": "Servizio non in esecuzione",
+    "Start the background service (mousetouch.service)": "Avvia il servizio in background (mousetouch.service)",
+    "No Magic Mouse connected": "Nessun Magic Mouse connesso",
+    "Waiting for a touch…": "In attesa di un tocco…",
+    "Pinned: the window stays on screen while workspaces slide": "Fissata: la finestra resta sullo schermo quando cambi spazio di lavoro",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Il tuo desktop non permette alle app di fissare le finestre. Usa il menu della finestra: COSMIC → Sticky, GNOME → Sempre sullo spazio di lavoro visibile, KDE → Tutti i desktop.",
+    "Could not run mousetouch: {error}": "Impossibile avviare mousetouch: {error}",
+    "Pinch": "Pizzico",
+    "1 finger": "1 dito",
+    "{n} fingers": "{n} dita",
+    "no rule": "nessuna regola",
+    "not a tap: {reason}": "non è un tocco: {reason}",
+    "a gesture ran": "è stato eseguito un gesto",
+    "button pressed": "pulsante premuto",
+    "too long": "troppo lungo",
+    "moved too far": "spostamento eccessivo",
+    "lifted while moving": "sollevato in movimento",
+    "Scroll": "Scroll",
+    "Click": "Clic",
+    "Mouse attached: {name}": "Mouse collegato: {name}",
+    "Mouse detached": "Mouse scollegato",
+    "Connected to the daemon": "Connesso al servizio",
+    "Daemon disconnected": "Servizio disconnesso",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Associazione del mouse",
+    "Forget and pair again": "Dimentica e associa di nuovo",
+    "Paired and bonded": "Associato e vincolato",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Associazione obsoleta: il mouse viene rifiutato finché non viene associato di nuovo (succede dopo averlo associato a un Mac)",
+    "Not paired": "Non associato",
+    "Checking…": "Verifica in corso…",
+    "Bluetooth status unavailable": "Stato Bluetooth non disponibile",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Rimuovere il mouse dal Bluetooth e associarlo da zero? Quando richiesto, spegni e riaccendi il mouse.",
+    "Pair again": "Associa di nuovo",
+    "Switch the mouse off and on": "Spegni e riaccendi il mouse",
+    "Working…": "Operazione in corso…",
+    "Paired again": "Associato di nuovo",
+    "Pairing failed: {error}": "Associazione non riuscita: {error}",
 }
 
 CATALOG["pt"] = {
@@ -369,6 +558,50 @@ CATALOG["pt"] = {
     "Horizontal": "Horizontal", "Vertical": "Vertical", "Both": "Ambos", "Auto-detect": "Detectar automaticamente", "On": "Ligado", "Off": "Desligado",
     "Whole notches": "Cliques inteiros", "Smooth steps": "Passos suaves", "System": "Sistema", "Light": "Claro", "Dark": "Escuro",
     "Could not save: {error}": "Não foi possível salvar: {error}",
+    "Live view": "Visualização ao vivo",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "O que o serviço detecta no mouse em tempo real: dedos, toques, deslizes, pinça, rolagem e cliques.",
+    "Open in its own window": "Abrir em uma janela separada",
+    "MouseTouch · Live": "MouseTouch · Ao vivo",
+    "Keep on screen": "Manter na tela",
+    "Stays visible while workspaces slide (sticky window)": "Permanece visível ao trocar de área de trabalho (janela fixa)",
+    "Clear log": "Limpar registro",
+    "Daemon not running": "O serviço não está em execução",
+    "Start the background service (mousetouch.service)": "Inicie o serviço em segundo plano (mousetouch.service)",
+    "No Magic Mouse connected": "Nenhum Magic Mouse conectado",
+    "Waiting for a touch…": "Aguardando um toque…",
+    "Pinned: the window stays on screen while workspaces slide": "Fixada: a janela permanece na tela ao trocar de área de trabalho",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Seu desktop não permite que apps fixem janelas. Use o menu da janela: COSMIC → Sticky, GNOME → Sempre na área de trabalho visível, KDE → Todas as áreas de trabalho.",
+    "Could not run mousetouch: {error}": "Não foi possível executar o mousetouch: {error}",
+    "Pinch": "Pinça",
+    "1 finger": "1 dedo",
+    "{n} fingers": "{n} dedos",
+    "no rule": "sem regra",
+    "not a tap: {reason}": "não é um toque: {reason}",
+    "a gesture ran": "um gesto foi executado",
+    "button pressed": "botão pressionado",
+    "too long": "muito longo",
+    "moved too far": "moveu demais",
+    "lifted while moving": "levantou em movimento",
+    "Scroll": "Rolagem",
+    "Click": "Clique",
+    "Mouse attached: {name}": "Mouse conectado: {name}",
+    "Mouse detached": "Mouse desconectado",
+    "Connected to the daemon": "Conectado ao serviço",
+    "Daemon disconnected": "Serviço desconectado",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Emparelhamento do mouse",
+    "Forget and pair again": "Esquecer e emparelhar novamente",
+    "Paired and bonded": "Emparelhado e vinculado",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Emparelhamento obsoleto: o mouse é rejeitado até ser emparelhado novamente (acontece após emparelhá-lo com um Mac)",
+    "Not paired": "Não emparelhado",
+    "Checking…": "Verificando…",
+    "Bluetooth status unavailable": "Status do Bluetooth indisponível",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Remover o mouse do Bluetooth e emparelhá-lo do zero? Quando solicitado, desligue e ligue o mouse.",
+    "Pair again": "Emparelhar novamente",
+    "Switch the mouse off and on": "Desligue e ligue o mouse",
+    "Working…": "Processando…",
+    "Paired again": "Emparelhado novamente",
+    "Pairing failed: {error}": "Falha no emparelhamento: {error}",
 }
 
 CATALOG["nl"] = {
@@ -418,6 +651,50 @@ CATALOG["nl"] = {
     "Horizontal": "Horizontaal", "Vertical": "Verticaal", "Both": "Beide", "Auto-detect": "Automatisch detecteren", "On": "Aan", "Off": "Uit",
     "Whole notches": "Hele klikken", "Smooth steps": "Vloeiende stappen", "System": "Systeem", "Light": "Licht", "Dark": "Donker",
     "Could not save: {error}": "Kon niet opslaan: {error}",
+    "Live view": "Liveweergave",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Wat de service in realtime op de muis waarneemt: vingers, tikken, vegen, knijpen, scrollen en klikken.",
+    "Open in its own window": "In een eigen venster openen",
+    "MouseTouch · Live": "MouseTouch · Live",
+    "Keep on screen": "Op het scherm houden",
+    "Stays visible while workspaces slide (sticky window)": "Blijft zichtbaar bij het wisselen van werkblad (vastgezet venster)",
+    "Clear log": "Logboek wissen",
+    "Daemon not running": "Service draait niet",
+    "Start the background service (mousetouch.service)": "Start de achtergrondservice (mousetouch.service)",
+    "No Magic Mouse connected": "Geen Magic Mouse verbonden",
+    "Waiting for a touch…": "Wachten op een aanraking…",
+    "Pinned: the window stays on screen while workspaces slide": "Vastgezet: het venster blijft op het scherm bij het wisselen van werkblad",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Je bureaublad staat apps niet toe vensters vast te zetten. Gebruik het venstermenu: COSMIC → Sticky, GNOME → Altijd op zichtbaar werkblad, KDE → Alle bureaubladen.",
+    "Could not run mousetouch: {error}": "Kan mousetouch niet starten: {error}",
+    "Pinch": "Knijpen",
+    "1 finger": "1 vinger",
+    "{n} fingers": "{n} vingers",
+    "no rule": "geen regel",
+    "not a tap: {reason}": "geen tik: {reason}",
+    "a gesture ran": "een gebaar is uitgevoerd",
+    "button pressed": "knop ingedrukt",
+    "too long": "te lang",
+    "moved too far": "te ver bewogen",
+    "lifted while moving": "losgelaten tijdens beweging",
+    "Scroll": "Scrollen",
+    "Click": "Klik",
+    "Mouse attached: {name}": "Muis verbonden: {name}",
+    "Mouse detached": "Muis losgekoppeld",
+    "Connected to the daemon": "Verbonden met de service",
+    "Daemon disconnected": "Service losgekoppeld",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Muis koppelen",
+    "Forget and pair again": "Vergeten en opnieuw koppelen",
+    "Paired and bonded": "Gekoppeld en verbonden",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Verouderde koppeling: de muis wordt geweigerd tot deze opnieuw is gekoppeld (gebeurt na het koppelen met een Mac)",
+    "Not paired": "Niet gekoppeld",
+    "Checking…": "Controleren…",
+    "Bluetooth status unavailable": "Bluetooth-status niet beschikbaar",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "De muis uit Bluetooth verwijderen en opnieuw koppelen? Zet de muis uit en weer aan wanneer daarom wordt gevraagd.",
+    "Pair again": "Opnieuw koppelen",
+    "Switch the mouse off and on": "Zet de muis uit en weer aan",
+    "Working…": "Bezig…",
+    "Paired again": "Opnieuw gekoppeld",
+    "Pairing failed: {error}": "Koppelen mislukt: {error}",
 }
 
 CATALOG["sv"] = {
@@ -467,6 +744,50 @@ CATALOG["sv"] = {
     "Horizontal": "Horisontell", "Vertical": "Vertikal", "Both": "Båda", "Auto-detect": "Identifiera automatiskt", "On": "På", "Off": "Av",
     "Whole notches": "Hela hack", "Smooth steps": "Mjuka steg", "System": "System", "Light": "Ljust", "Dark": "Mörkt",
     "Could not save: {error}": "Kunde inte spara: {error}",
+    "Live view": "Livevy",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Vad tjänsten ser på musen i realtid: fingrar, tryck, svep, nyp, rullning och klick.",
+    "Open in its own window": "Öppna i eget fönster",
+    "MouseTouch · Live": "MouseTouch · Live",
+    "Keep on screen": "Behåll på skärmen",
+    "Stays visible while workspaces slide (sticky window)": "Förblir synligt vid byte av arbetsyta (fäst fönster)",
+    "Clear log": "Rensa logg",
+    "Daemon not running": "Tjänsten körs inte",
+    "Start the background service (mousetouch.service)": "Starta bakgrundstjänsten (mousetouch.service)",
+    "No Magic Mouse connected": "Ingen Magic Mouse ansluten",
+    "Waiting for a touch…": "Väntar på en beröring…",
+    "Pinned: the window stays on screen while workspaces slide": "Fäst: fönstret stannar på skärmen vid byte av arbetsyta",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Din skrivbordsmiljö låter inte appar fästa fönster. Använd fönstermenyn i stället: COSMIC → Sticky, GNOME → Alltid på synlig arbetsyta, KDE → Alla skrivbord.",
+    "Could not run mousetouch: {error}": "Kunde inte köra mousetouch: {error}",
+    "Pinch": "Nyp",
+    "1 finger": "1 finger",
+    "{n} fingers": "{n} fingrar",
+    "no rule": "ingen regel",
+    "not a tap: {reason}": "inte ett tryck: {reason}",
+    "a gesture ran": "en gest kördes",
+    "button pressed": "knapp nedtryckt",
+    "too long": "för länge",
+    "moved too far": "flyttades för långt",
+    "lifted while moving": "lyftes under rörelse",
+    "Scroll": "Rullning",
+    "Click": "Klick",
+    "Mouse attached: {name}": "Mus ansluten: {name}",
+    "Mouse detached": "Mus frånkopplad",
+    "Connected to the daemon": "Ansluten till tjänsten",
+    "Daemon disconnected": "Tjänsten frånkopplad",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Parkoppling av musen",
+    "Forget and pair again": "Glöm och parkoppla igen",
+    "Paired and bonded": "Parkopplad och bunden",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Inaktuell parkoppling: musen avvisas tills den parkopplas igen (händer efter parkoppling med en Mac)",
+    "Not paired": "Inte parkopplad",
+    "Checking…": "Kontrollerar…",
+    "Bluetooth status unavailable": "Bluetooth-status inte tillgänglig",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Ta bort musen från Bluetooth och parkoppla den på nytt? Stäng av och slå på musen när du ombeds göra det.",
+    "Pair again": "Parkoppla igen",
+    "Switch the mouse off and on": "Stäng av och slå på musen",
+    "Working…": "Arbetar…",
+    "Paired again": "Parkopplad igen",
+    "Pairing failed: {error}": "Parkopplingen misslyckades: {error}",
 }
 
 CATALOG["pl"] = {
@@ -516,6 +837,50 @@ CATALOG["pl"] = {
     "Horizontal": "Pozioma", "Vertical": "Pionowa", "Both": "Obie", "Auto-detect": "Wykryj automatycznie", "On": "Wł.", "Off": "Wył.",
     "Whole notches": "Pełne skoki", "Smooth steps": "Płynne kroki", "System": "System", "Light": "Jasny", "Dark": "Ciemny",
     "Could not save: {error}": "Nie można zapisać: {error}",
+    "Live view": "Podgląd na żywo",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Co usługa wykrywa na myszy w czasie rzeczywistym: palce, stuknięcia, przeciągnięcia, uszczypnięcie, przewijanie i kliknięcia.",
+    "Open in its own window": "Otwórz w osobnym oknie",
+    "MouseTouch · Live": "MouseTouch · Na żywo",
+    "Keep on screen": "Zachowaj na ekranie",
+    "Stays visible while workspaces slide (sticky window)": "Pozostaje widoczne przy zmianie obszaru roboczego (okno przypięte)",
+    "Clear log": "Wyczyść dziennik",
+    "Daemon not running": "Usługa nie jest uruchomiona",
+    "Start the background service (mousetouch.service)": "Uruchom usługę w tle (mousetouch.service)",
+    "No Magic Mouse connected": "Brak podłączonej Magic Mouse",
+    "Waiting for a touch…": "Oczekiwanie na dotyk…",
+    "Pinned: the window stays on screen while workspaces slide": "Przypięte: okno pozostaje na ekranie przy zmianie obszaru roboczego",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Twoje środowisko nie pozwala aplikacjom przypinać okien. Użyj menu okna: COSMIC → Sticky, GNOME → Zawsze na widocznym obszarze roboczym, KDE → Wszystkie pulpity.",
+    "Could not run mousetouch: {error}": "Nie można uruchomić mousetouch: {error}",
+    "Pinch": "Uszczypnięcie",
+    "1 finger": "1 palec",
+    "{n} fingers": "{n} palców",
+    "no rule": "brak reguły",
+    "not a tap: {reason}": "to nie stuknięcie: {reason}",
+    "a gesture ran": "wykonano gest",
+    "button pressed": "wciśnięto przycisk",
+    "too long": "zbyt długo",
+    "moved too far": "zbyt duży ruch",
+    "lifted while moving": "oderwano w ruchu",
+    "Scroll": "Przewijanie",
+    "Click": "Kliknięcie",
+    "Mouse attached: {name}": "Mysz podłączona: {name}",
+    "Mouse detached": "Mysz odłączona",
+    "Connected to the daemon": "Połączono z usługą",
+    "Daemon disconnected": "Usługa odłączona",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Parowanie myszy",
+    "Forget and pair again": "Zapomnij i sparuj ponownie",
+    "Paired and bonded": "Sparowana i powiązana",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Nieaktualne parowanie: mysz jest odrzucana, dopóki nie zostanie ponownie sparowana (zdarza się po sparowaniu jej z komputerem Mac)",
+    "Not paired": "Niesparowana",
+    "Checking…": "Sprawdzanie…",
+    "Bluetooth status unavailable": "Stan Bluetooth niedostępny",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Usunąć mysz z Bluetooth i sparować ją od nowa? Gdy pojawi się prośba, wyłącz i włącz mysz.",
+    "Pair again": "Sparuj ponownie",
+    "Switch the mouse off and on": "Wyłącz i włącz mysz",
+    "Working…": "Pracuję…",
+    "Paired again": "Sparowano ponownie",
+    "Pairing failed: {error}": "Parowanie nie powiodło się: {error}",
 }
 
 CATALOG["cs"] = {
@@ -565,6 +930,50 @@ CATALOG["cs"] = {
     "Horizontal": "Vodorovná", "Vertical": "Svislá", "Both": "Obě", "Auto-detect": "Zjistit automaticky", "On": "Zap.", "Off": "Vyp.",
     "Whole notches": "Celé kroky", "Smooth steps": "Plynulé kroky", "System": "Systém", "Light": "Světlý", "Dark": "Tmavý",
     "Could not save: {error}": "Nelze uložit: {error}",
+    "Live view": "Živý náhled",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Co služba na myši zaznamenává v reálném čase: prsty, klepnutí, přejetí, štípnutí, posouvání a kliknutí.",
+    "Open in its own window": "Otevřít v samostatném okně",
+    "MouseTouch · Live": "MouseTouch · Živě",
+    "Keep on screen": "Ponechat na obrazovce",
+    "Stays visible while workspaces slide (sticky window)": "Zůstává viditelné při přepínání ploch (přišpendlené okno)",
+    "Clear log": "Vymazat záznam",
+    "Daemon not running": "Služba neběží",
+    "Start the background service (mousetouch.service)": "Spusťte službu na pozadí (mousetouch.service)",
+    "No Magic Mouse connected": "Není připojena žádná Magic Mouse",
+    "Waiting for a touch…": "Čeká se na dotyk…",
+    "Pinned: the window stays on screen while workspaces slide": "Přišpendleno: okno zůstává na obrazovce při přepínání ploch",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Vaše prostředí nedovoluje aplikacím přišpendlit okna. Použijte nabídku okna: COSMIC → Sticky, GNOME → Vždy na viditelné ploše, KDE → Všechny plochy.",
+    "Could not run mousetouch: {error}": "Nelze spustit mousetouch: {error}",
+    "Pinch": "Štípnutí",
+    "1 finger": "1 prst",
+    "{n} fingers": "{n} prstů",
+    "no rule": "žádné pravidlo",
+    "not a tap: {reason}": "není klepnutí: {reason}",
+    "a gesture ran": "bylo provedeno gesto",
+    "button pressed": "stisknuto tlačítko",
+    "too long": "příliš dlouho",
+    "moved too far": "příliš velký pohyb",
+    "lifted while moving": "zvednuto za pohybu",
+    "Scroll": "Posouvání",
+    "Click": "Kliknutí",
+    "Mouse attached: {name}": "Myš připojena: {name}",
+    "Mouse detached": "Myš odpojena",
+    "Connected to the daemon": "Připojeno ke službě",
+    "Daemon disconnected": "Služba odpojena",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Párování myši",
+    "Forget and pair again": "Zapomenout a znovu spárovat",
+    "Paired and bonded": "Spárována a svázána",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Zastaralé párování: myš je odmítána, dokud nebude znovu spárována (stává se po spárování s Macem)",
+    "Not paired": "Nespárována",
+    "Checking…": "Kontrola…",
+    "Bluetooth status unavailable": "Stav Bluetooth není k dispozici",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Odebrat myš z Bluetooth a znovu ji spárovat od začátku? Až budete vyzváni, myš vypněte a zapněte.",
+    "Pair again": "Znovu spárovat",
+    "Switch the mouse off and on": "Vypněte a zapněte myš",
+    "Working…": "Pracuje se…",
+    "Paired again": "Znovu spárována",
+    "Pairing failed: {error}": "Párování se nezdařilo: {error}",
 }
 
 CATALOG["ro"] = {
@@ -614,6 +1023,50 @@ CATALOG["ro"] = {
     "Horizontal": "Orizontal", "Vertical": "Vertical", "Both": "Ambele", "Auto-detect": "Detectare automată", "On": "Pornit", "Off": "Oprit",
     "Whole notches": "Trepte întregi", "Smooth steps": "Pași fluizi", "System": "Sistem", "Light": "Luminos", "Dark": "Întunecat",
     "Could not save: {error}": "Nu s-a putut salva: {error}",
+    "Live view": "Vizualizare live",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Ce detectează serviciul pe mouse în timp real: degete, atingeri, glisări, ciupire, derulare și clicuri.",
+    "Open in its own window": "Deschide într-o fereastră separată",
+    "MouseTouch · Live": "MouseTouch · Live",
+    "Keep on screen": "Păstrează pe ecran",
+    "Stays visible while workspaces slide (sticky window)": "Rămâne vizibilă la schimbarea spațiului de lucru (fereastră fixată)",
+    "Clear log": "Golește jurnalul",
+    "Daemon not running": "Serviciul nu rulează",
+    "Start the background service (mousetouch.service)": "Pornește serviciul în fundal (mousetouch.service)",
+    "No Magic Mouse connected": "Niciun Magic Mouse conectat",
+    "Waiting for a touch…": "Se așteaptă o atingere…",
+    "Pinned: the window stays on screen while workspaces slide": "Fixată: fereastra rămâne pe ecran la schimbarea spațiului de lucru",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Desktopul tău nu permite aplicațiilor să fixeze ferestre. Folosește meniul ferestrei: COSMIC → Sticky, GNOME → Mereu pe spațiul de lucru vizibil, KDE → Toate desktopurile.",
+    "Could not run mousetouch: {error}": "Nu s-a putut rula mousetouch: {error}",
+    "Pinch": "Ciupire",
+    "1 finger": "1 deget",
+    "{n} fingers": "{n} degete",
+    "no rule": "nicio regulă",
+    "not a tap: {reason}": "nu este atingere: {reason}",
+    "a gesture ran": "s-a executat un gest",
+    "button pressed": "buton apăsat",
+    "too long": "prea lung",
+    "moved too far": "mișcare prea mare",
+    "lifted while moving": "ridicat în mișcare",
+    "Scroll": "Derulare",
+    "Click": "Clic",
+    "Mouse attached: {name}": "Mouse conectat: {name}",
+    "Mouse detached": "Mouse deconectat",
+    "Connected to the daemon": "Conectat la serviciu",
+    "Daemon disconnected": "Serviciu deconectat",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Asocierea mouse-ului",
+    "Forget and pair again": "Uită și asociază din nou",
+    "Paired and bonded": "Asociat și legat",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Asociere învechită: mouse-ul este respins până când este asociat din nou (se întâmplă după asocierea cu un Mac)",
+    "Not paired": "Neasociat",
+    "Checking…": "Se verifică…",
+    "Bluetooth status unavailable": "Starea Bluetooth nu este disponibilă",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Eliminați mouse-ul din Bluetooth și îl asociați de la zero? Când vi se cere, opriți și porniți mouse-ul.",
+    "Pair again": "Asociază din nou",
+    "Switch the mouse off and on": "Opriți și porniți mouse-ul",
+    "Working…": "Se procesează…",
+    "Paired again": "Asociat din nou",
+    "Pairing failed: {error}": "Asocierea a eșuat: {error}",
 }
 
 CATALOG["el"] = {
@@ -663,6 +1116,50 @@ CATALOG["el"] = {
     "Horizontal": "Οριζόντιος", "Vertical": "Κάθετος", "Both": "Και οι δύο", "Auto-detect": "Αυτόματη ανίχνευση", "On": "Ενεργό", "Off": "Ανενεργό",
     "Whole notches": "Ολόκληρα βήματα", "Smooth steps": "Ομαλά βήματα", "System": "Σύστημα", "Light": "Φωτεινό", "Dark": "Σκούρο",
     "Could not save: {error}": "Αδυναμία αποθήκευσης: {error}",
+    "Live view": "Ζωντανή προβολή",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Τι ανιχνεύει η υπηρεσία στο ποντίκι σε πραγματικό χρόνο: δάχτυλα, πατήματα, σαρώσεις, τσίμπημα, κύλιση και κλικ.",
+    "Open in its own window": "Άνοιγμα σε ξεχωριστό παράθυρο",
+    "MouseTouch · Live": "MouseTouch · Ζωντανά",
+    "Keep on screen": "Διατήρηση στην οθόνη",
+    "Stays visible while workspaces slide (sticky window)": "Παραμένει ορατό κατά την αλλαγή χώρου εργασίας (καρφιτσωμένο παράθυρο)",
+    "Clear log": "Εκκαθάριση καταγραφής",
+    "Daemon not running": "Η υπηρεσία δεν εκτελείται",
+    "Start the background service (mousetouch.service)": "Εκκινήστε την υπηρεσία παρασκηνίου (mousetouch.service)",
+    "No Magic Mouse connected": "Δεν υπάρχει συνδεδεμένο Magic Mouse",
+    "Waiting for a touch…": "Αναμονή για άγγιγμα…",
+    "Pinned: the window stays on screen while workspaces slide": "Καρφιτσωμένο: το παράθυρο μένει στην οθόνη κατά την αλλαγή χώρου εργασίας",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Η επιφάνεια εργασίας σας δεν επιτρέπει στις εφαρμογές να καρφιτσώνουν παράθυρα. Χρησιμοποιήστε το μενού παραθύρου: COSMIC → Sticky, GNOME → Πάντα στον ορατό χώρο εργασίας, KDE → Όλες οι επιφάνειες.",
+    "Could not run mousetouch: {error}": "Αδυναμία εκτέλεσης του mousetouch: {error}",
+    "Pinch": "Τσίμπημα",
+    "1 finger": "1 δάχτυλο",
+    "{n} fingers": "{n} δάχτυλα",
+    "no rule": "κανένας κανόνας",
+    "not a tap: {reason}": "όχι πάτημα: {reason}",
+    "a gesture ran": "εκτελέστηκε χειρονομία",
+    "button pressed": "πατήθηκε κουμπί",
+    "too long": "πολύ μεγάλη διάρκεια",
+    "moved too far": "μετακινήθηκε πολύ",
+    "lifted while moving": "σηκώθηκε εν κινήσει",
+    "Scroll": "Κύλιση",
+    "Click": "Κλικ",
+    "Mouse attached: {name}": "Ποντίκι συνδέθηκε: {name}",
+    "Mouse detached": "Ποντίκι αποσυνδέθηκε",
+    "Connected to the daemon": "Συνδέθηκε με την υπηρεσία",
+    "Daemon disconnected": "Η υπηρεσία αποσυνδέθηκε",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Σύζευξη ποντικιού",
+    "Forget and pair again": "Διαγραφή και νέα σύζευξη",
+    "Paired and bonded": "Συζευγμένο και δεσμευμένο",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Παρωχημένη σύζευξη: το ποντίκι απορρίπτεται μέχρι να συζευχθεί ξανά (συμβαίνει μετά τη σύζευξή του με Mac)",
+    "Not paired": "Χωρίς σύζευξη",
+    "Checking…": "Έλεγχος…",
+    "Bluetooth status unavailable": "Η κατάσταση Bluetooth δεν είναι διαθέσιμη",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Αφαίρεση του ποντικιού από το Bluetooth και σύζευξη από την αρχή; Όταν σας ζητηθεί, απενεργοποιήστε και ενεργοποιήστε ξανά το ποντίκι.",
+    "Pair again": "Σύζευξη ξανά",
+    "Switch the mouse off and on": "Απενεργοποιήστε και ενεργοποιήστε ξανά το ποντίκι",
+    "Working…": "Σε εξέλιξη…",
+    "Paired again": "Έγινε νέα σύζευξη",
+    "Pairing failed: {error}": "Η σύζευξη απέτυχε: {error}",
 }
 
 CATALOG["uk"] = {
@@ -712,6 +1209,50 @@ CATALOG["uk"] = {
     "Horizontal": "Горизонтальна", "Vertical": "Вертикальна", "Both": "Обидві", "Auto-detect": "Автовизначення", "On": "Увімк.", "Off": "Вимк.",
     "Whole notches": "Цілі кроки", "Smooth steps": "Плавні кроки", "System": "Система", "Light": "Світла", "Dark": "Темна",
     "Could not save: {error}": "Не вдалося зберегти: {error}",
+    "Live view": "Перегляд у реальному часі",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Що служба бачить на миші в реальному часі: пальці, дотики, свайпи, щипок, прокручування та кліки.",
+    "Open in its own window": "Відкрити в окремому вікні",
+    "MouseTouch · Live": "MouseTouch · Наживо",
+    "Keep on screen": "Тримати на екрані",
+    "Stays visible while workspaces slide (sticky window)": "Залишається видимим під час зміни робочого простору (закріплене вікно)",
+    "Clear log": "Очистити журнал",
+    "Daemon not running": "Служба не запущена",
+    "Start the background service (mousetouch.service)": "Запустіть фонову службу (mousetouch.service)",
+    "No Magic Mouse connected": "Magic Mouse не підключено",
+    "Waiting for a touch…": "Очікування дотику…",
+    "Pinned: the window stays on screen while workspaces slide": "Закріплено: вікно залишається на екрані під час зміни робочого простору",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Ваше робоче середовище не дозволяє програмам закріплювати вікна. Скористайтеся меню вікна: COSMIC → Sticky, GNOME → Завжди на видимому робочому просторі, KDE → Усі стільниці.",
+    "Could not run mousetouch: {error}": "Не вдалося запустити mousetouch: {error}",
+    "Pinch": "Щипок",
+    "1 finger": "1 палець",
+    "{n} fingers": "{n} пальців",
+    "no rule": "немає правила",
+    "not a tap: {reason}": "не дотик: {reason}",
+    "a gesture ran": "виконано жест",
+    "button pressed": "натиснуто кнопку",
+    "too long": "надто довго",
+    "moved too far": "надто великий рух",
+    "lifted while moving": "піднято під час руху",
+    "Scroll": "Прокручування",
+    "Click": "Клік",
+    "Mouse attached: {name}": "Мишу підключено: {name}",
+    "Mouse detached": "Мишу відключено",
+    "Connected to the daemon": "Підключено до служби",
+    "Daemon disconnected": "Службу відключено",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Створення пари з мишею",
+    "Forget and pair again": "Забути та створити пару знову",
+    "Paired and bonded": "Пару створено та зв'язано",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Застаріла пара: мишу буде відхилено, доки пару не буде створено знову (трапляється після створення пари з Mac)",
+    "Not paired": "Пару не створено",
+    "Checking…": "Перевірка…",
+    "Bluetooth status unavailable": "Стан Bluetooth недоступний",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Видалити мишу з Bluetooth і створити пару заново? Коли з'явиться запит, вимкніть і ввімкніть мишу.",
+    "Pair again": "Створити пару знову",
+    "Switch the mouse off and on": "Вимкніть і ввімкніть мишу",
+    "Working…": "Виконання…",
+    "Paired again": "Пару створено знову",
+    "Pairing failed: {error}": "Не вдалося створити пару: {error}",
 }
 
 CATALOG["ru"] = {
@@ -761,6 +1302,50 @@ CATALOG["ru"] = {
     "Horizontal": "Горизонтальная", "Vertical": "Вертикальная", "Both": "Обе", "Auto-detect": "Автоопределение", "On": "Вкл.", "Off": "Выкл.",
     "Whole notches": "Целые щелчки", "Smooth steps": "Плавные шаги", "System": "Система", "Light": "Светлая", "Dark": "Тёмная",
     "Could not save: {error}": "Не удалось сохранить: {error}",
+    "Live view": "Просмотр в реальном времени",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Что служба видит на мыши в реальном времени: пальцы, касания, свайпы, щипок, прокрутка и клики.",
+    "Open in its own window": "Открыть в отдельном окне",
+    "MouseTouch · Live": "MouseTouch · Live",
+    "Keep on screen": "Держать на экране",
+    "Stays visible while workspaces slide (sticky window)": "Остаётся видимым при смене рабочего пространства (закреплённое окно)",
+    "Clear log": "Очистить журнал",
+    "Daemon not running": "Служба не запущена",
+    "Start the background service (mousetouch.service)": "Запустите фоновую службу (mousetouch.service)",
+    "No Magic Mouse connected": "Magic Mouse не подключена",
+    "Waiting for a touch…": "Ожидание касания…",
+    "Pinned: the window stays on screen while workspaces slide": "Закреплено: окно остаётся на экране при смене рабочего пространства",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Ваша рабочая среда не позволяет приложениям закреплять окна. Используйте меню окна: COSMIC → Sticky, GNOME → Всегда на видимом рабочем пространстве, KDE → Все рабочие столы.",
+    "Could not run mousetouch: {error}": "Не удалось запустить mousetouch: {error}",
+    "Pinch": "Щипок",
+    "1 finger": "1 палец",
+    "{n} fingers": "{n} пальцев",
+    "no rule": "нет правила",
+    "not a tap: {reason}": "не касание: {reason}",
+    "a gesture ran": "выполнен жест",
+    "button pressed": "нажата кнопка",
+    "too long": "слишком долго",
+    "moved too far": "слишком большое движение",
+    "lifted while moving": "поднят во время движения",
+    "Scroll": "Прокрутка",
+    "Click": "Клик",
+    "Mouse attached: {name}": "Мышь подключена: {name}",
+    "Mouse detached": "Мышь отключена",
+    "Connected to the daemon": "Подключено к службе",
+    "Daemon disconnected": "Служба отключена",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Сопряжение мыши",
+    "Forget and pair again": "Забыть и сопрячь заново",
+    "Paired and bonded": "Сопряжена и привязана",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Устаревшее сопряжение: мышь отклоняется, пока не будет сопряжена заново (случается после сопряжения с Mac)",
+    "Not paired": "Не сопряжена",
+    "Checking…": "Проверка…",
+    "Bluetooth status unavailable": "Состояние Bluetooth недоступно",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Удалить мышь из Bluetooth и выполнить сопряжение заново? Когда появится запрос, выключите и включите мышь.",
+    "Pair again": "Сопрячь заново",
+    "Switch the mouse off and on": "Выключите и включите мышь",
+    "Working…": "Выполняется…",
+    "Paired again": "Сопряжение выполнено заново",
+    "Pairing failed: {error}": "Не удалось выполнить сопряжение: {error}",
 }
 
 CATALOG["tr"] = {
@@ -810,6 +1395,50 @@ CATALOG["tr"] = {
     "Horizontal": "Yatay", "Vertical": "Dikey", "Both": "Her ikisi", "Auto-detect": "Otomatik algıla", "On": "Açık", "Off": "Kapalı",
     "Whole notches": "Tam kademeler", "Smooth steps": "Akıcı adımlar", "System": "Sistem", "Light": "Açık", "Dark": "Koyu",
     "Could not save: {error}": "Kaydedilemedi: {error}",
+    "Live view": "Canlı görünüm",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Hizmetin farede anlık olarak algıladıkları: parmaklar, dokunmalar, kaydırmalar, sıkıştırma, kaydırma çubuğu ve tıklamalar.",
+    "Open in its own window": "Ayrı pencerede aç",
+    "MouseTouch · Live": "MouseTouch · Canlı",
+    "Keep on screen": "Ekranda tut",
+    "Stays visible while workspaces slide (sticky window)": "Çalışma alanı değişirken görünür kalır (sabit pencere)",
+    "Clear log": "Günlüğü temizle",
+    "Daemon not running": "Hizmet çalışmıyor",
+    "Start the background service (mousetouch.service)": "Arka plan hizmetini başlatın (mousetouch.service)",
+    "No Magic Mouse connected": "Bağlı Magic Mouse yok",
+    "Waiting for a touch…": "Dokunma bekleniyor…",
+    "Pinned: the window stays on screen while workspaces slide": "Sabitlendi: çalışma alanı değişirken pencere ekranda kalır",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Masaüstünüz uygulamaların pencere sabitlemesine izin vermiyor. Bunun yerine pencere menüsünü kullanın: COSMIC → Sticky, GNOME → Her zaman görünür çalışma alanında, KDE → Tüm masaüstleri.",
+    "Could not run mousetouch: {error}": "mousetouch çalıştırılamadı: {error}",
+    "Pinch": "Sıkıştırma",
+    "1 finger": "1 parmak",
+    "{n} fingers": "{n} parmak",
+    "no rule": "kural yok",
+    "not a tap: {reason}": "dokunma değil: {reason}",
+    "a gesture ran": "bir hareket çalıştı",
+    "button pressed": "düğmeye basıldı",
+    "too long": "çok uzun",
+    "moved too far": "çok fazla hareket etti",
+    "lifted while moving": "hareket ederken kaldırıldı",
+    "Scroll": "Kaydırma",
+    "Click": "Tıklama",
+    "Mouse attached: {name}": "Fare bağlandı: {name}",
+    "Mouse detached": "Fare bağlantısı kesildi",
+    "Connected to the daemon": "Hizmete bağlandı",
+    "Daemon disconnected": "Hizmet bağlantısı kesildi",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Fare eşleştirmesi",
+    "Forget and pair again": "Unut ve yeniden eşleştir",
+    "Paired and bonded": "Eşleştirildi ve bağlandı",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Eski eşleştirme: fare yeniden eşleştirilene kadar reddedilir (bir Mac ile eşleştirildikten sonra olur)",
+    "Not paired": "Eşleştirilmedi",
+    "Checking…": "Kontrol ediliyor…",
+    "Bluetooth status unavailable": "Bluetooth durumu kullanılamıyor",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Fare Bluetooth'tan kaldırılıp sıfırdan eşleştirilsin mi? İstendiğinde fareyi kapatıp açın.",
+    "Pair again": "Yeniden eşleştir",
+    "Switch the mouse off and on": "Fareyi kapatıp açın",
+    "Working…": "Çalışıyor…",
+    "Paired again": "Yeniden eşleştirildi",
+    "Pairing failed: {error}": "Eşleştirme başarısız: {error}",
 }
 
 CATALOG["ar"] = {
@@ -859,6 +1488,50 @@ CATALOG["ar"] = {
     "Horizontal": "أفقي", "Vertical": "عمودي", "Both": "كلاهما", "Auto-detect": "اكتشاف تلقائي", "On": "تشغيل", "Off": "إيقاف",
     "Whole notches": "درجات كاملة", "Smooth steps": "خطوات سلسة", "System": "النظام", "Light": "فاتح", "Dark": "داكن",
     "Could not save: {error}": "تعذّر الحفظ: {error}",
+    "Live view": "عرض مباشر",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "ما تكتشفه الخدمة على الفأرة لحظيًا: الأصابع والنقرات والتمريرات والقرص والتمرير والضغطات.",
+    "Open in its own window": "فتح في نافذة مستقلة",
+    "MouseTouch · Live": "MouseTouch · مباشر",
+    "Keep on screen": "إبقاء على الشاشة",
+    "Stays visible while workspaces slide (sticky window)": "تبقى ظاهرة أثناء تبديل مساحات العمل (نافذة مثبّتة)",
+    "Clear log": "مسح السجل",
+    "Daemon not running": "الخدمة لا تعمل",
+    "Start the background service (mousetouch.service)": "ابدأ خدمة الخلفية (mousetouch.service)",
+    "No Magic Mouse connected": "لا توجد Magic Mouse متصلة",
+    "Waiting for a touch…": "في انتظار لمسة…",
+    "Pinned: the window stays on screen while workspaces slide": "مثبّتة: تبقى النافذة على الشاشة أثناء تبديل مساحات العمل",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "سطح المكتب لديك لا يسمح للتطبيقات بتثبيت النوافذ. استخدم قائمة النافذة بدلًا من ذلك: COSMIC → Sticky، GNOME → دائمًا على مساحة العمل الظاهرة، KDE → كل أسطح المكتب.",
+    "Could not run mousetouch: {error}": "تعذّر تشغيل mousetouch: {error}",
+    "Pinch": "قرص",
+    "1 finger": "إصبع واحد",
+    "{n} fingers": "{n} أصابع",
+    "no rule": "لا توجد قاعدة",
+    "not a tap: {reason}": "ليست نقرة: {reason}",
+    "a gesture ran": "تم تنفيذ إيماءة",
+    "button pressed": "تم ضغط الزر",
+    "too long": "طويلة جدًا",
+    "moved too far": "تحركت كثيرًا",
+    "lifted while moving": "رُفعت أثناء الحركة",
+    "Scroll": "تمرير",
+    "Click": "ضغطة",
+    "Mouse attached: {name}": "تم توصيل الفأرة: {name}",
+    "Mouse detached": "تم فصل الفأرة",
+    "Connected to the daemon": "متصل بالخدمة",
+    "Daemon disconnected": "انقطع الاتصال بالخدمة",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "إقران الماوس",
+    "Forget and pair again": "تجاهل وإعادة الإقران",
+    "Paired and bonded": "مقترن ومرتبط",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "إقران قديم: يُرفض الماوس حتى تتم إعادة إقرانه (يحدث بعد إقرانه بجهاز Mac)",
+    "Not paired": "غير مقترن",
+    "Checking…": "جارٍ التحقق…",
+    "Bluetooth status unavailable": "حالة Bluetooth غير متاحة",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "هل تريد إزالة الماوس من Bluetooth وإقرانه من جديد؟ عند الطلب، أطفئ الماوس ثم شغّله.",
+    "Pair again": "إعادة الإقران",
+    "Switch the mouse off and on": "أطفئ الماوس ثم شغّله",
+    "Working…": "جارٍ التنفيذ…",
+    "Paired again": "تمت إعادة الإقران",
+    "Pairing failed: {error}": "فشل الإقران: {error}",
 }
 
 CATALOG["hi"] = {
@@ -908,6 +1581,50 @@ CATALOG["hi"] = {
     "Horizontal": "क्षैतिज", "Vertical": "लंबवत", "Both": "दोनों", "Auto-detect": "स्वतः पहचान", "On": "चालू", "Off": "बंद",
     "Whole notches": "पूरे नॉच", "Smooth steps": "स्मूद चरण", "System": "सिस्टम", "Light": "लाइट", "Dark": "डार्क",
     "Could not save: {error}": "सहेज नहीं सका: {error}",
+    "Live view": "लाइव दृश्य",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "सेवा माउस पर जो कुछ तुरंत देखती है: उंगलियाँ, टैप, स्वाइप, पिंच, स्क्रॉल और क्लिक।",
+    "Open in its own window": "अलग विंडो में खोलें",
+    "MouseTouch · Live": "MouseTouch · लाइव",
+    "Keep on screen": "स्क्रीन पर रखें",
+    "Stays visible while workspaces slide (sticky window)": "वर्कस्पेस बदलते समय दिखती रहती है (स्टिकी विंडो)",
+    "Clear log": "लॉग साफ़ करें",
+    "Daemon not running": "सेवा चल नहीं रही",
+    "Start the background service (mousetouch.service)": "बैकग्राउंड सेवा शुरू करें (mousetouch.service)",
+    "No Magic Mouse connected": "कोई Magic Mouse कनेक्ट नहीं है",
+    "Waiting for a touch…": "स्पर्श की प्रतीक्षा…",
+    "Pinned: the window stays on screen while workspaces slide": "पिन की गई: वर्कस्पेस बदलते समय विंडो स्क्रीन पर रहती है",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "आपका डेस्कटॉप ऐप्स को विंडो पिन करने की अनुमति नहीं देता। इसके बजाय विंडो मेनू का उपयोग करें: COSMIC → Sticky, GNOME → हमेशा दिखने वाले वर्कस्पेस पर, KDE → सभी डेस्कटॉप।",
+    "Could not run mousetouch: {error}": "mousetouch नहीं चल सका: {error}",
+    "Pinch": "पिंच",
+    "1 finger": "1 उंगली",
+    "{n} fingers": "{n} उंगलियाँ",
+    "no rule": "कोई नियम नहीं",
+    "not a tap: {reason}": "टैप नहीं: {reason}",
+    "a gesture ran": "एक जेस्चर चला",
+    "button pressed": "बटन दबाया गया",
+    "too long": "बहुत लंबा",
+    "moved too far": "बहुत दूर हिला",
+    "lifted while moving": "हिलते हुए उठाया",
+    "Scroll": "स्क्रॉल",
+    "Click": "क्लिक",
+    "Mouse attached: {name}": "माउस जुड़ा: {name}",
+    "Mouse detached": "माउस हटाया गया",
+    "Connected to the daemon": "सेवा से कनेक्ट हुआ",
+    "Daemon disconnected": "सेवा डिस्कनेक्ट हुई",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "माउस पेयरिंग",
+    "Forget and pair again": "भूलें और फिर से पेयर करें",
+    "Paired and bonded": "पेयर और बॉन्ड हो गया",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "पुरानी पेयरिंग: माउस को फिर से पेयर करने तक अस्वीकार किया जाता है (Mac के साथ पेयर करने के बाद ऐसा होता है)",
+    "Not paired": "पेयर नहीं है",
+    "Checking…": "जाँच हो रही है…",
+    "Bluetooth status unavailable": "Bluetooth स्थिति उपलब्ध नहीं है",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "माउस को Bluetooth से हटाकर नए सिरे से पेयर करें? कहे जाने पर माउस को बंद करके फिर चालू करें।",
+    "Pair again": "फिर से पेयर करें",
+    "Switch the mouse off and on": "माउस को बंद करके फिर चालू करें",
+    "Working…": "काम हो रहा है…",
+    "Paired again": "फिर से पेयर हो गया",
+    "Pairing failed: {error}": "पेयरिंग विफल: {error}",
 }
 
 CATALOG["zh"] = {
@@ -957,6 +1674,50 @@ CATALOG["zh"] = {
     "Horizontal": "水平", "Vertical": "垂直", "Both": "双轴", "Auto-detect": "自动检测", "On": "开", "Off": "关",
     "Whole notches": "整格", "Smooth steps": "平滑步进", "System": "系统", "Light": "浅色", "Dark": "深色",
     "Could not save: {error}": "无法保存：{error}",
+    "Live view": "实时视图",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "服务在鼠标上实时检测到的内容：手指、轻点、滑动、捏合、滚动和点击。",
+    "Open in its own window": "在独立窗口中打开",
+    "MouseTouch · Live": "MouseTouch · 实时",
+    "Keep on screen": "保持在屏幕上",
+    "Stays visible while workspaces slide (sticky window)": "切换工作区时保持可见（置顶窗口）",
+    "Clear log": "清空日志",
+    "Daemon not running": "服务未运行",
+    "Start the background service (mousetouch.service)": "请启动后台服务 (mousetouch.service)",
+    "No Magic Mouse connected": "未连接 Magic Mouse",
+    "Waiting for a touch…": "等待触摸…",
+    "Pinned: the window stays on screen while workspaces slide": "已固定：切换工作区时窗口保持在屏幕上",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "您的桌面不允许应用固定窗口。请改用窗口菜单：COSMIC → Sticky，GNOME → 始终在可见工作区，KDE → 所有桌面。",
+    "Could not run mousetouch: {error}": "无法运行 mousetouch：{error}",
+    "Pinch": "捏合",
+    "1 finger": "1 根手指",
+    "{n} fingers": "{n} 根手指",
+    "no rule": "无规则",
+    "not a tap: {reason}": "不是轻点：{reason}",
+    "a gesture ran": "已执行手势",
+    "button pressed": "按下了按键",
+    "too long": "时间过长",
+    "moved too far": "移动过远",
+    "lifted while moving": "移动中抬起",
+    "Scroll": "滚动",
+    "Click": "点击",
+    "Mouse attached: {name}": "鼠标已连接：{name}",
+    "Mouse detached": "鼠标已断开",
+    "Connected to the daemon": "已连接到服务",
+    "Daemon disconnected": "服务已断开",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "鼠标配对",
+    "Forget and pair again": "忘记并重新配对",
+    "Paired and bonded": "已配对并已绑定",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "配对已失效:在重新配对之前鼠标会被拒绝(与 Mac 配对后会出现此情况)",
+    "Not paired": "未配对",
+    "Checking…": "正在检查…",
+    "Bluetooth status unavailable": "Bluetooth 状态不可用",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "要从 Bluetooth 中移除鼠标并重新配对吗?收到提示时,请关闭鼠标再打开。",
+    "Pair again": "重新配对",
+    "Switch the mouse off and on": "关闭鼠标再打开",
+    "Working…": "正在处理…",
+    "Paired again": "已重新配对",
+    "Pairing failed: {error}": "配对失败:{error}",
 }
 
 CATALOG["ja"] = {
@@ -1006,6 +1767,50 @@ CATALOG["ja"] = {
     "Horizontal": "水平", "Vertical": "垂直", "Both": "両方", "Auto-detect": "自動検出", "On": "オン", "Off": "オフ",
     "Whole notches": "ノッチ単位", "Smooth steps": "スムーズ", "System": "システム", "Light": "ライト", "Dark": "ダーク",
     "Could not save: {error}": "保存できませんでした：{error}",
+    "Live view": "ライブビュー",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "サービスがマウス上でリアルタイムに検出した内容：指、タップ、スワイプ、ピンチ、スクロール、クリック。",
+    "Open in its own window": "別ウィンドウで開く",
+    "MouseTouch · Live": "MouseTouch · ライブ",
+    "Keep on screen": "画面に固定",
+    "Stays visible while workspaces slide (sticky window)": "ワークスペース切り替え中も表示されたままになります（固定ウィンドウ）",
+    "Clear log": "ログを消去",
+    "Daemon not running": "サービスが実行されていません",
+    "Start the background service (mousetouch.service)": "バックグラウンドサービスを開始してください (mousetouch.service)",
+    "No Magic Mouse connected": "Magic Mouse が接続されていません",
+    "Waiting for a touch…": "タッチを待っています…",
+    "Pinned: the window stays on screen while workspaces slide": "固定中：ワークスペース切り替え中もウィンドウは画面に残ります",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "お使いのデスクトップではアプリがウィンドウを固定できません。代わりにウィンドウメニューを使用してください：COSMIC → Sticky、GNOME → 常に表示中のワークスペースに、KDE → すべてのデスクトップ。",
+    "Could not run mousetouch: {error}": "mousetouch を実行できませんでした：{error}",
+    "Pinch": "ピンチ",
+    "1 finger": "1 本指",
+    "{n} fingers": "{n} 本指",
+    "no rule": "ルールなし",
+    "not a tap: {reason}": "タップではありません：{reason}",
+    "a gesture ran": "ジェスチャーが実行されました",
+    "button pressed": "ボタンが押されました",
+    "too long": "長すぎます",
+    "moved too far": "移動量が大きすぎます",
+    "lifted while moving": "移動中に離されました",
+    "Scroll": "スクロール",
+    "Click": "クリック",
+    "Mouse attached: {name}": "マウスが接続されました：{name}",
+    "Mouse detached": "マウスが切断されました",
+    "Connected to the daemon": "サービスに接続しました",
+    "Daemon disconnected": "サービスから切断されました",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "マウスのペアリング",
+    "Forget and pair again": "登録を解除して再ペアリング",
+    "Paired and bonded": "ペアリング済み(ボンディング済み)",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "ペアリング情報が古くなっています。再ペアリングするまでマウスは拒否されます(Mac とペアリングした後に発生します)",
+    "Not paired": "未ペアリング",
+    "Checking…": "確認中…",
+    "Bluetooth status unavailable": "Bluetooth の状態を取得できません",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "マウスを Bluetooth から削除して、新たにペアリングしますか?指示が表示されたら、マウスの電源を切って入れ直してください。",
+    "Pair again": "再ペアリング",
+    "Switch the mouse off and on": "マウスの電源を切って入れ直してください",
+    "Working…": "処理中…",
+    "Paired again": "再ペアリングしました",
+    "Pairing failed: {error}": "ペアリングに失敗しました: {error}",
 }
 
 CATALOG["ko"] = {
@@ -1055,6 +1860,50 @@ CATALOG["ko"] = {
     "Horizontal": "가로", "Vertical": "세로", "Both": "양쪽", "Auto-detect": "자동 감지", "On": "켬", "Off": "끔",
     "Whole notches": "칸 단위", "Smooth steps": "부드럽게", "System": "시스템", "Light": "밝게", "Dark": "어둡게",
     "Could not save: {error}": "저장할 수 없음: {error}",
+    "Live view": "실시간 보기",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "서비스가 마우스에서 실시간으로 감지하는 내용: 손가락, 탭, 스와이프, 핀치, 스크롤, 클릭.",
+    "Open in its own window": "별도 창에서 열기",
+    "MouseTouch · Live": "MouseTouch · 실시간",
+    "Keep on screen": "화면에 고정",
+    "Stays visible while workspaces slide (sticky window)": "작업 공간을 전환해도 계속 표시됩니다 (고정 창)",
+    "Clear log": "로그 지우기",
+    "Daemon not running": "서비스가 실행되고 있지 않습니다",
+    "Start the background service (mousetouch.service)": "백그라운드 서비스를 시작하세요 (mousetouch.service)",
+    "No Magic Mouse connected": "연결된 Magic Mouse가 없습니다",
+    "Waiting for a touch…": "터치를 기다리는 중…",
+    "Pinned: the window stays on screen while workspaces slide": "고정됨: 작업 공간을 전환해도 창이 화면에 남습니다",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "사용 중인 데스크톱은 앱이 창을 고정하는 것을 허용하지 않습니다. 대신 창 메뉴를 사용하세요: COSMIC → Sticky, GNOME → 항상 보이는 작업 공간에 표시, KDE → 모든 데스크톱.",
+    "Could not run mousetouch: {error}": "mousetouch를 실행할 수 없습니다: {error}",
+    "Pinch": "핀치",
+    "1 finger": "1개 손가락",
+    "{n} fingers": "{n}개 손가락",
+    "no rule": "규칙 없음",
+    "not a tap: {reason}": "탭이 아님: {reason}",
+    "a gesture ran": "제스처가 실행됨",
+    "button pressed": "버튼이 눌림",
+    "too long": "너무 길음",
+    "moved too far": "너무 많이 이동함",
+    "lifted while moving": "이동 중에 손을 뗌",
+    "Scroll": "스크롤",
+    "Click": "클릭",
+    "Mouse attached: {name}": "마우스 연결됨: {name}",
+    "Mouse detached": "마우스 연결 해제됨",
+    "Connected to the daemon": "서비스에 연결됨",
+    "Daemon disconnected": "서비스 연결 끊김",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "마우스 페어링",
+    "Forget and pair again": "지우고 다시 페어링",
+    "Paired and bonded": "페어링 및 본딩됨",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "오래된 페어링: 다시 페어링할 때까지 마우스가 거부됩니다 (Mac과 페어링한 후에 발생합니다)",
+    "Not paired": "페어링되지 않음",
+    "Checking…": "확인 중…",
+    "Bluetooth status unavailable": "Bluetooth 상태를 확인할 수 없음",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Bluetooth에서 마우스를 제거하고 새로 페어링할까요? 안내가 표시되면 마우스를 끄고 다시 켜세요.",
+    "Pair again": "다시 페어링",
+    "Switch the mouse off and on": "마우스를 끄고 다시 켜세요",
+    "Working…": "처리 중…",
+    "Paired again": "다시 페어링됨",
+    "Pairing failed: {error}": "페어링 실패: {error}",
 }
 
 CATALOG["vi"] = {
@@ -1104,6 +1953,50 @@ CATALOG["vi"] = {
     "Horizontal": "Ngang", "Vertical": "Dọc", "Both": "Cả hai", "Auto-detect": "Tự phát hiện", "On": "Bật", "Off": "Tắt",
     "Whole notches": "Nấc nguyên", "Smooth steps": "Bước mượt", "System": "Hệ thống", "Light": "Sáng", "Dark": "Tối",
     "Could not save: {error}": "Không thể lưu: {error}",
+    "Live view": "Xem trực tiếp",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Những gì dịch vụ nhận thấy trên chuột theo thời gian thực: ngón tay, chạm, vuốt, chụm, cuộn và nhấp.",
+    "Open in its own window": "Mở trong cửa sổ riêng",
+    "MouseTouch · Live": "MouseTouch · Trực tiếp",
+    "Keep on screen": "Giữ trên màn hình",
+    "Stays visible while workspaces slide (sticky window)": "Vẫn hiển thị khi chuyển không gian làm việc (cửa sổ ghim)",
+    "Clear log": "Xóa nhật ký",
+    "Daemon not running": "Dịch vụ chưa chạy",
+    "Start the background service (mousetouch.service)": "Khởi động dịch vụ nền (mousetouch.service)",
+    "No Magic Mouse connected": "Chưa kết nối Magic Mouse",
+    "Waiting for a touch…": "Đang chờ chạm…",
+    "Pinned: the window stays on screen while workspaces slide": "Đã ghim: cửa sổ vẫn ở trên màn hình khi chuyển không gian làm việc",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Môi trường máy tính của bạn không cho ứng dụng ghim cửa sổ. Hãy dùng menu cửa sổ: COSMIC → Sticky, GNOME → Luôn ở không gian làm việc hiển thị, KDE → Tất cả màn hình.",
+    "Could not run mousetouch: {error}": "Không thể chạy mousetouch: {error}",
+    "Pinch": "Chụm",
+    "1 finger": "1 ngón",
+    "{n} fingers": "{n} ngón",
+    "no rule": "không có quy tắc",
+    "not a tap: {reason}": "không phải chạm: {reason}",
+    "a gesture ran": "đã chạy một cử chỉ",
+    "button pressed": "đã nhấn nút",
+    "too long": "quá lâu",
+    "moved too far": "di chuyển quá xa",
+    "lifted while moving": "nhấc lên khi đang di chuyển",
+    "Scroll": "Cuộn",
+    "Click": "Nhấp",
+    "Mouse attached: {name}": "Đã kết nối chuột: {name}",
+    "Mouse detached": "Đã ngắt kết nối chuột",
+    "Connected to the daemon": "Đã kết nối với dịch vụ",
+    "Daemon disconnected": "Dịch vụ đã ngắt kết nối",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Ghép nối chuột",
+    "Forget and pair again": "Xóa và ghép nối lại",
+    "Paired and bonded": "Đã ghép nối và liên kết",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Ghép nối cũ: chuột bị từ chối cho đến khi được ghép nối lại (xảy ra sau khi ghép nối với Mac)",
+    "Not paired": "Chưa ghép nối",
+    "Checking…": "Đang kiểm tra…",
+    "Bluetooth status unavailable": "Không có trạng thái Bluetooth",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Xóa chuột khỏi Bluetooth và ghép nối lại từ đầu? Khi được yêu cầu, hãy tắt rồi bật lại chuột.",
+    "Pair again": "Ghép nối lại",
+    "Switch the mouse off and on": "Tắt rồi bật lại chuột",
+    "Working…": "Đang xử lý…",
+    "Paired again": "Đã ghép nối lại",
+    "Pairing failed: {error}": "Ghép nối thất bại: {error}",
 }
 
 CATALOG["id"] = {
@@ -1153,6 +2046,50 @@ CATALOG["id"] = {
     "Horizontal": "Horizontal", "Vertical": "Vertikal", "Both": "Keduanya", "Auto-detect": "Deteksi otomatis", "On": "Nyala", "Off": "Mati",
     "Whole notches": "Takik penuh", "Smooth steps": "Langkah halus", "System": "Sistem", "Light": "Terang", "Dark": "Gelap",
     "Could not save: {error}": "Tidak dapat menyimpan: {error}",
+    "Live view": "Tampilan langsung",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "Apa yang dideteksi layanan pada mouse secara langsung: jari, ketukan, usapan, cubitan, gulir, dan klik.",
+    "Open in its own window": "Buka di jendela terpisah",
+    "MouseTouch · Live": "MouseTouch · Langsung",
+    "Keep on screen": "Tetap di layar",
+    "Stays visible while workspaces slide (sticky window)": "Tetap terlihat saat berpindah ruang kerja (jendela tersemat)",
+    "Clear log": "Bersihkan log",
+    "Daemon not running": "Layanan tidak berjalan",
+    "Start the background service (mousetouch.service)": "Mulai layanan latar belakang (mousetouch.service)",
+    "No Magic Mouse connected": "Tidak ada Magic Mouse yang terhubung",
+    "Waiting for a touch…": "Menunggu sentuhan…",
+    "Pinned: the window stays on screen while workspaces slide": "Tersemat: jendela tetap di layar saat berpindah ruang kerja",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "Desktop Anda tidak mengizinkan aplikasi menyematkan jendela. Gunakan menu jendela: COSMIC → Sticky, GNOME → Selalu di ruang kerja yang terlihat, KDE → Semua desktop.",
+    "Could not run mousetouch: {error}": "Tidak dapat menjalankan mousetouch: {error}",
+    "Pinch": "Cubit",
+    "1 finger": "1 jari",
+    "{n} fingers": "{n} jari",
+    "no rule": "tidak ada aturan",
+    "not a tap: {reason}": "bukan ketukan: {reason}",
+    "a gesture ran": "sebuah gestur dijalankan",
+    "button pressed": "tombol ditekan",
+    "too long": "terlalu lama",
+    "moved too far": "bergerak terlalu jauh",
+    "lifted while moving": "diangkat saat bergerak",
+    "Scroll": "Gulir",
+    "Click": "Klik",
+    "Mouse attached: {name}": "Mouse terhubung: {name}",
+    "Mouse detached": "Mouse terputus",
+    "Connected to the daemon": "Terhubung ke layanan",
+    "Daemon disconnected": "Layanan terputus",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "Pemasangan mouse",
+    "Forget and pair again": "Lupakan dan pasangkan lagi",
+    "Paired and bonded": "Terpasang dan terikat",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "Pemasangan usang: mouse ditolak sampai dipasangkan lagi (terjadi setelah memasangkannya dengan Mac)",
+    "Not paired": "Belum dipasangkan",
+    "Checking…": "Memeriksa…",
+    "Bluetooth status unavailable": "Status Bluetooth tidak tersedia",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "Hapus mouse dari Bluetooth dan pasangkan dari awal? Saat diminta, matikan lalu nyalakan mouse.",
+    "Pair again": "Pasangkan lagi",
+    "Switch the mouse off and on": "Matikan lalu nyalakan mouse",
+    "Working…": "Memproses…",
+    "Paired again": "Berhasil dipasangkan lagi",
+    "Pairing failed: {error}": "Pemasangan gagal: {error}",
 }
 
 CATALOG["th"] = {
@@ -1202,6 +2139,50 @@ CATALOG["th"] = {
     "Horizontal": "แนวนอน", "Vertical": "แนวตั้ง", "Both": "ทั้งสอง", "Auto-detect": "ตรวจหาอัตโนมัติ", "On": "เปิด", "Off": "ปิด",
     "Whole notches": "เป็นขั้น", "Smooth steps": "ขั้นแบบลื่น", "System": "ระบบ", "Light": "สว่าง", "Dark": "มืด",
     "Could not save: {error}": "บันทึกไม่ได้: {error}",
+    "Live view": "มุมมองสด",
+    "What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks.": "สิ่งที่บริการตรวจพบบนเมาส์แบบเรียลไทม์: นิ้ว การแตะ การปัด การบีบ การเลื่อน และการคลิก",
+    "Open in its own window": "เปิดในหน้าต่างแยก",
+    "MouseTouch · Live": "MouseTouch · สด",
+    "Keep on screen": "คงไว้บนหน้าจอ",
+    "Stays visible while workspaces slide (sticky window)": "ยังคงมองเห็นได้ขณะสลับพื้นที่ทำงาน (หน้าต่างปักหมุด)",
+    "Clear log": "ล้างบันทึก",
+    "Daemon not running": "บริการไม่ได้ทำงานอยู่",
+    "Start the background service (mousetouch.service)": "เริ่มบริการพื้นหลัง (mousetouch.service)",
+    "No Magic Mouse connected": "ไม่มี Magic Mouse เชื่อมต่ออยู่",
+    "Waiting for a touch…": "กำลังรอการสัมผัส…",
+    "Pinned: the window stays on screen while workspaces slide": "ปักหมุดแล้ว: หน้าต่างจะอยู่บนหน้าจอขณะสลับพื้นที่ทำงาน",
+    "Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.": "เดสก์ท็อปของคุณไม่อนุญาตให้แอปปักหมุดหน้าต่าง ให้ใช้เมนูหน้าต่างแทน: COSMIC → Sticky, GNOME → แสดงบนพื้นที่ทำงานที่มองเห็นเสมอ, KDE → ทุกเดสก์ท็อป",
+    "Could not run mousetouch: {error}": "ไม่สามารถเรียกใช้ mousetouch: {error}",
+    "Pinch": "บีบ",
+    "1 finger": "1 นิ้ว",
+    "{n} fingers": "{n} นิ้ว",
+    "no rule": "ไม่มีกฎ",
+    "not a tap: {reason}": "ไม่ใช่การแตะ: {reason}",
+    "a gesture ran": "มีการทำงานของท่าทาง",
+    "button pressed": "กดปุ่มแล้ว",
+    "too long": "นานเกินไป",
+    "moved too far": "เคลื่อนที่ไกลเกินไป",
+    "lifted while moving": "ยกนิ้วขณะเคลื่อนที่",
+    "Scroll": "เลื่อน",
+    "Click": "คลิก",
+    "Mouse attached: {name}": "เชื่อมต่อเมาส์แล้ว: {name}",
+    "Mouse detached": "ถอดเมาส์แล้ว",
+    "Connected to the daemon": "เชื่อมต่อกับบริการแล้ว",
+    "Daemon disconnected": "บริการตัดการเชื่อมต่อแล้ว",
+    "Bluetooth": "Bluetooth",
+    "Mouse pairing": "การจับคู่เมาส์",
+    "Forget and pair again": "ลบและจับคู่อีกครั้ง",
+    "Paired and bonded": "จับคู่และผูกแล้ว",
+    "Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)": "การจับคู่ล้าสมัย: เมาส์จะถูกปฏิเสธจนกว่าจะจับคู่อีกครั้ง (เกิดขึ้นหลังจับคู่กับ Mac)",
+    "Not paired": "ยังไม่ได้จับคู่",
+    "Checking…": "กำลังตรวจสอบ…",
+    "Bluetooth status unavailable": "ไม่สามารถดูสถานะ Bluetooth ได้",
+    "Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on.": "ลบเมาส์ออกจาก Bluetooth แล้วจับคู่ใหม่ทั้งหมดหรือไม่ เมื่อได้รับแจ้ง ให้ปิดเมาส์แล้วเปิดใหม่",
+    "Pair again": "จับคู่อีกครั้ง",
+    "Switch the mouse off and on": "ปิดเมาส์แล้วเปิดใหม่",
+    "Working…": "กำลังดำเนินการ…",
+    "Paired again": "จับคู่อีกครั้งแล้ว",
+    "Pairing failed: {error}": "จับคู่ไม่สำเร็จ: {error}",
 }
 
 DEFAULTS = {
@@ -1477,6 +2458,722 @@ class GestureDialog(Adw.Dialog):
         self.close()
 
 
+# ---------------------------------------------------------------------------
+# Live view. The daemon grabs the mouse, so it is the only thing that can see
+# the fingers; it republishes them on $XDG_RUNTIME_DIR/mousetouch.sock as
+# JSON lines (see src/monitor.rs). One EventClient feeds every view.
+# ---------------------------------------------------------------------------
+
+def socket_path() -> Path:
+    run = os.environ.get("XDG_RUNTIME_DIR")
+    if run and os.path.isabs(run):
+        return Path(run) / "mousetouch.sock"
+    return Path(f"/tmp/mousetouch-{os.getuid()}.sock")
+
+
+class EventClient:
+    """Connection to the daemon's event stream; retries every 1.5 s while the
+    daemon is away. Listeners get each decoded event plus synthetic
+    {"t": "connected"} / {"t": "disconnected"} markers."""
+
+    def __init__(self):
+        self.listeners = []
+        self.connected = False
+        self._sock = None
+        self._buf = b""
+        GLib.timeout_add(1500, self._try_connect)
+        self._try_connect()
+
+    def add_listener(self, fn):
+        if fn not in self.listeners:
+            self.listeners.append(fn)
+
+    def remove_listener(self, fn):
+        if fn in self.listeners:
+            self.listeners.remove(fn)
+
+    def _emit(self, ev):
+        for fn in list(self.listeners):
+            fn(ev)
+
+    def _try_connect(self):
+        if self._sock is not None:
+            return True
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.setblocking(False)
+        try:
+            s.connect(str(socket_path()))
+        except OSError:
+            s.close()
+            return True
+        self._sock = s
+        self.connected = True
+        GLib.io_add_watch(s.fileno(), GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self._on_readable)
+        self._emit({"t": "connected"})
+        return True
+
+    def _on_readable(self, _fd, cond):
+        data = b""
+        if cond & GLib.IO_IN:
+            try:
+                data = self._sock.recv(65536)
+            except BlockingIOError:
+                return True
+            except OSError:
+                data = b""
+        if not data:
+            self._sock.close()
+            self._sock = None
+            self._buf = b""
+            self.connected = False
+            self._emit({"t": "disconnected"})
+            return False
+        self._buf += data
+        *lines, self._buf = self._buf.split(b"\n")
+        for ln in lines:
+            if ln:
+                try:
+                    self._emit(json.loads(ln))
+                except ValueError:
+                    pass
+        return True
+
+
+DIR_ARROWS = {"left": "←", "right": "→", "up": "↑", "down": "↓"}
+FINGER_COLORS = [(0.21, 0.52, 0.89), (0.18, 0.69, 0.42), (0.96, 0.47, 0.0), (0.72, 0.26, 0.76), (0.88, 0.16, 0.20)]
+ACCENT = (0.21, 0.52, 0.89)
+# Magic Mouse 2 footprint (mm); only the outline's proportions matter.
+MOUSE_W_MM, MOUSE_L_MM = 57.0, 113.0
+
+
+def fingers_text(n: int) -> str:
+    return _("1 finger") if n == 1 else _("{n} fingers").format(n=n)
+
+
+def describe_rule(ev: dict) -> str:
+    kind = {"swipe": _("Swipe"), "tap": _("Tap"), "double_tap": _("Double tap")}.get(ev.get("kind"), ev.get("kind", ""))
+    s = f"{kind} · {fingers_text(ev.get('fingers', 0))}"
+    if ev.get("dir"):
+        s += " " + DIR_ARROWS.get(ev["dir"], ev["dir"])
+    s += " → " + (ev.get("action") or _("no rule"))
+    if ev.get("app"):
+        s += f" ({ev['app']})"
+    return s
+
+
+def describe_gesture(ev: dict) -> str:
+    name = _("Workspace swipe") if ev.get("gesture") == "workspace_swipe" else _("Pinch")
+    s = f"{name} · {fingers_text(ev.get('fingers', 0))}"
+    if ev.get("dir"):
+        s += " " + DIR_ARROWS.get(ev["dir"], ev["dir"])
+    return s
+
+
+def describe_event(ev: dict) -> str | None:
+    """Log line for an event, or None for the ones that are drawn only."""
+    t = ev.get("t")
+    if t == "rule":
+        return describe_rule(ev)
+    if t == "gesture_begin":
+        return describe_gesture(ev)
+    if t == "touch_end":
+        n = ev.get("fingers", 0)
+        if ev.get("tap"):
+            return f"{_('Tap')} · {fingers_text(n)}"
+        return f"{fingers_text(n)} · " + _("not a tap: {reason}").format(reason=_(ev.get("reason", "")))
+    if t == "button":
+        return f"{_('Click')}: {ev.get('button', '')} {'↓' if ev.get('down') else '↑'}"
+    if t == "device":
+        return _("Mouse attached: {name}").format(name=ev.get("name", ""))
+    if t == "device_lost":
+        return _("Mouse detached")
+    if t == "connected":
+        return _("Connected to the daemon")
+    if t == "disconnected":
+        return _("Daemon disconnected")
+    return None
+
+
+def draw_text(cr, text, x, y, size=11.0, color=(0, 0, 0), align="left", bold=False, alpha=1.0):
+    layout = PangoCairo.create_layout(cr)
+    fd = Pango.FontDescription.from_string("Sans")
+    fd.set_absolute_size(size * Pango.SCALE)
+    if bold:
+        fd.set_weight(Pango.Weight.BOLD)
+    layout.set_font_description(fd)
+    layout.set_text(text, -1)
+    tw, th = layout.get_pixel_size()
+    if align == "center":
+        x, y = x - tw / 2, y - th / 2
+    elif align == "right":
+        x -= tw
+    cr.set_source_rgba(*color, alpha)
+    cr.move_to(x, y)
+    PangoCairo.show_layout(cr, layout)
+    return tw, th
+
+
+def rounded_rect(cr, x, y, w, h, r):
+    r = min(r, w / 2, h / 2)
+    cr.new_sub_path()
+    cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+    cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+    cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+    cr.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
+    cr.close_path()
+
+
+def draw_arrow(cr, x1, y1, x2, y2, color, width=4.0, alpha=1.0):
+    ang = math.atan2(y2 - y1, x2 - x1)
+    head = max(8.0, width * 2.6)
+    cr.set_source_rgba(*color, alpha)
+    cr.set_line_width(width)
+    cr.set_line_cap(cairo.LINE_CAP_ROUND)
+    cr.move_to(x1, y1)
+    cr.line_to(x2 - math.cos(ang) * head * 0.6, y2 - math.sin(ang) * head * 0.6)
+    cr.stroke()
+    cr.move_to(x2, y2)
+    cr.line_to(x2 - head * math.cos(ang - 0.5), y2 - head * math.sin(ang - 0.5))
+    cr.line_to(x2 - head * math.cos(ang + 0.5), y2 - head * math.sin(ang + 0.5))
+    cr.close_path()
+    cr.fill()
+
+
+class MouseView(Gtk.DrawingArea):
+    """Top view of the mouse with the fingers on it, where they landed, the
+    path they took, the gesture the daemon is replaying, scrolling and
+    clicks. Listens only while mapped."""
+
+    BADGE_S = 2.8
+    TRAIL_S = 0.7
+
+    def __init__(self, client: EventClient, compact: bool = False):
+        super().__init__(hexpand=True, vexpand=True)
+        self.set_content_height(240 if compact else 340)
+        self.client = client
+        self.compact = compact
+        self.connected = client.connected
+        self.device = None
+        self.fingers = []
+        self.trails = {}
+        self.lifted = []
+        self.state = "idle"
+        self.pad = None
+        self.scale = None
+        self.badges = []
+        self.scroll = {"dx": 0.0, "dy": 0.0, "t": 0.0}
+        self.buttons = {}
+        self._tick = 0
+        self.set_draw_func(self._draw)
+        self.connect("map", lambda *_a: client.add_listener(self.on_event))
+        self.connect("unmap", lambda *_a: client.remove_listener(self.on_event))
+
+    # -- events ------------------------------------------------------------
+    def on_event(self, ev: dict):
+        t = ev.get("t")
+        now = time.monotonic()
+        if t == "connected":
+            self.connected = True
+        elif t == "disconnected":
+            self.connected = False
+            self.device = None
+            self._clear_touch()
+        elif t == "device":
+            self.device = ev
+        elif t == "device_lost":
+            self.device = None
+            self._clear_touch()
+        elif t == "frame":
+            fingers = ev.get("fingers", [])
+            if fingers:
+                ids = {f["id"] for f in fingers}
+                for f in fingers:
+                    tr = self.trails.setdefault(f["id"], [])
+                    tr.append((f["x"], f["y"], now))
+                    del tr[:-150]
+                for k in [k for k in self.trails if k not in ids]:
+                    del self.trails[k]
+            else:
+                self.lifted = [(f["x"], f["y"], now) for f in self.fingers] + self.lifted
+                self.trails = {}
+            self.fingers = fingers
+            self.state = ev.get("state", "idle")
+            self.pad = (ev["pad_dx"], ev["pad_dy"]) if "pad_dx" in ev else None
+            self.scale = ev.get("scale")
+        elif t == "gesture_begin":
+            self._badge(describe_gesture(ev), "accent")
+        elif t == "rule":
+            # Every 1-finger movement is checked against swipe rules; a miss
+            # there is just normal mouse use, not worth a badge.
+            if ev.get("matched") or ev.get("fingers", 0) > 1 or ev.get("kind") != "swipe":
+                self._badge(describe_rule(ev), "accent" if ev.get("matched") else "muted")
+        elif t == "touch_end":
+            n = ev.get("fingers", 0)
+            if ev.get("tap"):
+                self._badge(f"{_('Tap')} · {fingers_text(n)}", "info")
+            elif n > 1 and ev.get("reason"):
+                self._badge(_("not a tap: {reason}").format(reason=_(ev["reason"])), "warn")
+        elif t == "scroll":
+            if now - self.scroll["t"] > 0.8:
+                self.scroll["dx"] = self.scroll["dy"] = 0.0
+            self.scroll["dx"] += ev.get("dx", 0)
+            self.scroll["dy"] += ev.get("dy", 0)
+            self.scroll["t"] = now
+        elif t == "button":
+            self.buttons[ev.get("button", "")] = bool(ev.get("down"))
+        self._animate()
+
+    def _clear_touch(self):
+        self.fingers = []
+        self.trails = {}
+        self.state = "idle"
+        self.pad = self.scale = None
+        self.buttons = {}
+
+    def _badge(self, text: str, kind: str):
+        self.badges.append({"text": text, "kind": kind, "t": time.monotonic()})
+        del self.badges[:-3]
+
+    def _animating(self, now: float) -> bool:
+        return bool(self.fingers or self.lifted or self.badges or now - self.scroll["t"] < 1.0 or any(self.buttons.values()))
+
+    def _animate(self):
+        self.queue_draw()
+        if not self._tick:
+            self._tick = GLib.timeout_add(33, self._on_tick)
+
+    def _on_tick(self):
+        now = time.monotonic()
+        self.badges = [b for b in self.badges if now - b["t"] < self.BADGE_S]
+        self.lifted = [g for g in self.lifted if now - g[2] < 0.6]
+        self.queue_draw()
+        if self._animating(now):
+            return True
+        self._tick = 0
+        return False
+
+    # -- drawing -----------------------------------------------------------
+    def _draw(self, _area, cr, w, h):
+        dark = Adw.StyleManager.get_default().get_dark()
+        fg = (0.93, 0.93, 0.93) if dark else (0.13, 0.13, 0.13)
+        muted = (0.62, 0.62, 0.64) if dark else (0.47, 0.47, 0.48)
+        body = (0.20, 0.20, 0.21) if dark else (0.975, 0.975, 0.97)
+        edge = (0.45, 0.45, 0.47) if dark else (0.68, 0.68, 0.67)
+        now = time.monotonic()
+        font = 10.0 if self.compact else 11.5
+
+        # Header: device or status; finger count.
+        if not self.connected:
+            title, hint = _("Daemon not running"), _("Start the background service (mousetouch.service)")
+        elif not self.device:
+            title, hint = _("No Magic Mouse connected"), ""
+        else:
+            title, hint = self.device.get("name", ""), self.device.get("source", "")
+        draw_text(cr, title, 12, 8, font, fg if self.device else muted, bold=True)
+        if hint:
+            draw_text(cr, hint, 12, 8 + font * 1.5, font * 0.9, muted)
+        if self.fingers:
+            state = {"workspace": _("Workspace swipe"), "pinch": _("Pinch")}.get(self.state)
+            right = fingers_text(len(self.fingers)) + (f" · {state}" if state else "")
+            draw_text(cr, right, w - 12, 8, font, fg, align="right", bold=True)
+        elif self.device and not self.badges:
+            draw_text(cr, _("Waiting for a touch…"), w - 12, 8, font * 0.9, muted, align="right")
+
+        # Outline, leaving room for the header and the scroll gauge.
+        top = 8 + font * 3.2
+        gauge = 64
+        s = min((h - top - 18) / MOUSE_L_MM, (w - 2 * gauge) / MOUSE_W_MM)
+        mw, ml = MOUSE_W_MM * s, MOUSE_L_MM * s
+        mx, my = (w - mw) / 2, top + (h - top - 14 - ml) / 2
+        rounded_rect(cr, mx, my, mw, ml, mw * 0.46)
+        cr.set_source_rgb(*body)
+        cr.fill_preserve()
+        cr.set_source_rgb(*edge)
+        cr.set_line_width(1.5)
+        cr.stroke()
+        if not self.device:
+            cr.set_source_rgba(*muted, 0.25 if dark else 0.18)
+            rounded_rect(cr, mx, my, mw, ml, mw * 0.46)
+            cr.fill()
+
+        # Clicks light up the front half on the side pressed.
+        for name, down in self.buttons.items():
+            if not down:
+                continue
+            cr.save()
+            rounded_rect(cr, mx, my, mw, ml, mw * 0.46)
+            cr.clip()
+            if name == "left":
+                cr.rectangle(mx, my, mw / 2, ml * 0.42)
+            elif name == "right":
+                cr.rectangle(mx + mw / 2, my, mw / 2, ml * 0.42)
+            else:
+                cr.rectangle(mx + mw * 0.3, my, mw * 0.4, ml * 0.42)
+            cr.set_source_rgba(*ACCENT, 0.3)
+            cr.fill()
+            cr.restore()
+
+        dev_w = (self.device or {}).get("w_mm") or 1.0
+        dev_h = (self.device or {}).get("h_mm") or 1.0
+        inset = 3.0 * s
+
+        def to_px(x, y):
+            return (
+                mx + inset + (mw - 2 * inset) * min(1.0, max(0.0, x / dev_w)),
+                my + inset + (ml - 2 * inset) * min(1.0, max(0.0, y / dev_h)),
+            )
+
+        r = max(8.0, 4.5 * s)  # a fingertip contact is roughly 9 mm across
+
+        # Ghosts of fingers that just lifted.
+        for x, y, t0 in self.lifted:
+            a = max(0.0, 1 - (now - t0) / 0.6)
+            px, py = to_px(x, y)
+            cr.arc(px, py, r * (1 + 0.8 * (1 - a)), 0, 2 * math.pi)
+            cr.set_source_rgba(*muted, 0.45 * a)
+            cr.set_line_width(2)
+            cr.stroke()
+
+        # Trails, landing points and fingers.
+        for i, f in enumerate(self.fingers):
+            col = FINGER_COLORS[i % len(FINGER_COLORS)]
+            tr = self.trails.get(f["id"], [])
+            if len(tr) > 1:
+                cr.set_line_width(max(2.0, r * 0.5))
+                cr.set_line_cap(cairo.LINE_CAP_ROUND)
+                for (x1, y1, _t1), (x2, y2, t2) in zip(tr, tr[1:]):
+                    age = now - t2
+                    if age > self.TRAIL_S:
+                        continue
+                    cr.move_to(*to_px(x1, y1))
+                    cr.line_to(*to_px(x2, y2))
+                    cr.set_source_rgba(*col, 0.5 * (1 - age / self.TRAIL_S))
+                    cr.stroke()
+            x0, y0 = to_px(f["x0"], f["y0"])
+            px, py = to_px(f["x"], f["y"])
+            if math.hypot(px - x0, py - y0) > r * 0.8:
+                cr.arc(x0, y0, r * 0.4, 0, 2 * math.pi)
+                cr.set_source_rgba(*col, 0.85)
+                cr.set_line_width(1.5)
+                cr.stroke()
+            cr.arc(px, py, r, 0, 2 * math.pi)
+            cr.set_source_rgba(*col, 0.95)
+            cr.fill_preserve()
+            cr.set_source_rgba(1, 1, 1, 0.9)
+            cr.set_line_width(2)
+            cr.stroke()
+            draw_text(cr, str(i + 1), px, py, r * 1.15, (1, 1, 1), align="center", bold=True)
+
+        # Centroid and the continuous gesture being replayed.
+        if len(self.fingers) >= 2:
+            cx = sum(f["x"] for f in self.fingers) / len(self.fingers)
+            cy = sum(f["y"] for f in self.fingers) / len(self.fingers)
+            pcx, pcy = to_px(cx, cy)
+            cr.set_source_rgba(*fg, 0.5)
+            cr.set_line_width(1.2)
+            cr.move_to(pcx - 6, pcy)
+            cr.line_to(pcx + 6, pcy)
+            cr.move_to(pcx, pcy - 6)
+            cr.line_to(pcx, pcy + 6)
+            cr.stroke()
+            if self.state == "workspace" and self.pad:
+                dx, dy = self.pad
+                dist = math.hypot(dx, dy)
+                if dist > 0.3:
+                    ux, uy = dx / dist, dy / dist
+                    length = min(ml * 0.42, 14 + dist * s)
+                    draw_arrow(cr, pcx, pcy, pcx + ux * length, pcy + uy * length, ACCENT, width=max(3.0, r * 0.4))
+                    draw_text(cr, f"{dist:.0f} mm", pcx + ux * (length + 10), pcy + uy * (length + 10) - font / 2, font, fg,
+                              align="right" if ux < 0 else "left", bold=True)
+            elif self.state == "pinch" and self.scale:
+                # One arrow beyond each finger, pointing away from the centroid
+                # when the fingers spread and towards it when they close.
+                out = self.scale >= 1.0
+                reach = r * 2.2
+                for f in self.fingers[:2]:
+                    px, py = to_px(f["x"], f["y"])
+                    d = math.hypot(px - pcx, py - pcy)
+                    if d < 1:
+                        continue
+                    ux, uy = (px - pcx) / d, (py - pcy) / d
+                    base = (px + ux * r * 1.3, py + uy * r * 1.3)
+                    tip = (base[0] + ux * reach, base[1] + uy * reach)
+                    if out:
+                        draw_arrow(cr, *base, *tip, ACCENT, width=max(3.0, r * 0.3))
+                    else:
+                        draw_arrow(cr, *tip, *base, ACCENT, width=max(3.0, r * 0.3))
+                draw_text(cr, f"×{self.scale:.2f}", pcx, pcy + r * 1.6, font, fg, align="center", bold=True)
+
+        # Scroll gauge beside the mouse (vertical wheel) and below it (horizontal).
+        age = now - self.scroll["t"]
+        if age < 1.0 and (self.scroll["dy"] or self.scroll["dx"]):
+            a = 1.0 if age < 0.5 else 1 - (age - 0.5) / 0.5
+            gx = mx + mw + gauge * 0.55
+            cr.set_source_rgba(*muted, 0.35 * a)
+            cr.set_line_width(2)
+            cr.move_to(gx, my + ml * 0.15)
+            cr.line_to(gx, my + ml * 0.85)
+            cr.stroke()
+            notches = self.scroll["dy"] / 120.0
+            if notches:
+                # Positive wheel = away from the user = content up.
+                length = min(ml * 0.33, 10 + abs(notches) * 14)
+                gy = my + ml / 2
+                draw_arrow(cr, gx, gy, gx, gy - math.copysign(length, notches), ACCENT, width=3.5, alpha=a)
+                draw_text(cr, f"{notches:+.1f}", gx, gy + math.copysign(length + 10, -notches) - font / 2, font, fg, align="center", alpha=a, bold=True)
+            hnotches = self.scroll["dx"] / 120.0
+            if hnotches:
+                length = min(mw * 0.4, 10 + abs(hnotches) * 14)
+                gy = my + ml + 8
+                draw_arrow(cr, mx + mw / 2, gy, mx + mw / 2 + math.copysign(length, hnotches), gy, ACCENT, width=3.5, alpha=a)
+
+        # Badges: recent discrete results, newest at the bottom.
+        by = h - 10
+        for b in reversed(self.badges):
+            age = now - b["t"]
+            a = 1.0 if age < self.BADGE_S - 0.7 else max(0.0, (self.BADGE_S - age) / 0.7)
+            bg = {"accent": ACCENT, "warn": (0.90, 0.45, 0.10), "muted": muted, "info": (0.36, 0.60, 0.46)}[b["kind"]]
+            layout = PangoCairo.create_layout(cr)
+            fd = Pango.FontDescription.from_string("Sans")
+            fd.set_absolute_size(font * Pango.SCALE)
+            fd.set_weight(Pango.Weight.BOLD)
+            layout.set_font_description(fd)
+            layout.set_text(b["text"], -1)
+            layout.set_width(int((w - 24) * Pango.SCALE))
+            layout.set_ellipsize(Pango.EllipsizeMode.END)
+            tw, th = layout.get_pixel_size()
+            bh = th + 10
+            rounded_rect(cr, 10, by - bh, tw + 18, bh, bh / 2)
+            cr.set_source_rgba(*bg, 0.92 * a)
+            cr.fill()
+            cr.set_source_rgba(1, 1, 1, a)
+            cr.move_to(19, by - bh + 5)
+            PangoCairo.show_layout(cr, layout)
+            by -= bh + 6
+
+
+class EventLog(Gtk.ScrolledWindow):
+    """Newest-first list of what the daemon reported. Consecutive scroll
+    events within half a second share one row."""
+
+    MAX_ROWS = 120
+
+    def __init__(self, client: EventClient):
+        super().__init__(vexpand=True, min_content_height=150, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        self.list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
+        self.set_child(self.list)
+        self._scroll_row = None
+        self._scroll_t = 0.0
+        self._scroll_sum = [0.0, 0.0]
+        self.connect("map", lambda *_a: client.add_listener(self.on_event))
+        self.connect("unmap", lambda *_a: client.remove_listener(self.on_event))
+
+    def on_event(self, ev: dict):
+        if ev.get("t") == "scroll":
+            now = time.monotonic()
+            if self._scroll_row is None or now - self._scroll_t > 0.5 or self.list.get_row_at_index(0) is not self._scroll_row:
+                self._scroll_sum = [0.0, 0.0]
+                self._scroll_row = self._add("")
+            self._scroll_t = now
+            self._scroll_sum[0] += ev.get("dx", 0)
+            self._scroll_sum[1] += ev.get("dy", 0)
+            parts = []
+            if self._scroll_sum[1]:
+                parts.append(f"{'↑' if self._scroll_sum[1] > 0 else '↓'} {abs(self._scroll_sum[1]) / 120:.1f}")
+            if self._scroll_sum[0]:
+                parts.append(f"{'→' if self._scroll_sum[0] > 0 else '←'} {abs(self._scroll_sum[0]) / 120:.1f}")
+            self._scroll_row.set_title(GLib.markup_escape_text(f"{_('Scroll')} {' '.join(parts)}"))
+            return
+        text = describe_event(ev)
+        if text:
+            self._add(text)
+
+    def _add(self, text: str) -> Adw.ActionRow:
+        row = Adw.ActionRow(title=GLib.markup_escape_text(text), subtitle=time.strftime("%H:%M:%S"))
+        self.list.prepend(row)
+        extra = self.list.get_row_at_index(self.MAX_ROWS)
+        if extra is not None:
+            self.list.remove(extra)
+        return row
+
+    def clear(self):
+        while (row := self.list.get_row_at_index(0)) is not None:
+            self.list.remove(row)
+        self._scroll_row = None
+
+
+def mousetouch_binary() -> str | None:
+    exe = shutil.which("mousetouch")
+    if exe:
+        return exe
+    here = Path(__file__).resolve().parent.parent
+    for p in (here / "target" / "release" / "mousetouch", here / "target" / "debug" / "mousetouch"):
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p)
+    return None
+
+
+def set_window_sticky(title: str, on: bool) -> tuple[bool, str]:
+    """Ask the compositor (through `mousetouch sticky`) to show the window
+    with this title on every workspace. Returns (ok, message)."""
+    exe = mousetouch_binary()
+    if not exe:
+        return False, _("Could not run mousetouch: {error}").format(error="mousetouch not found in PATH")
+    try:
+        r = subprocess.run([exe, "sticky", APP_ID, title, "on" if on else "off"], capture_output=True, text=True, timeout=5)
+    except Exception as e:  # noqa: BLE001
+        return False, _("Could not run mousetouch: {error}").format(error=e)
+    if r.returncode == 0:
+        return True, ""
+    if r.returncode == 2:
+        return False, _("Your desktop does not let apps pin windows. Use the window menu instead: COSMIC → Sticky, GNOME → Always on Visible Workspace, KDE → All Desktops.")
+    return False, _("Could not run mousetouch: {error}").format(error=r.stderr.strip() or f"exit {r.returncode}")
+
+
+class RepairDialog(Adw.Dialog):
+    """Runs `mousetouch bt-repair` and shows its progress line by line. The
+    daemon's helper removes the mouse from BlueZ, waits for it to advertise
+    again (you switch it off and on), then pairs, trusts and connects."""
+
+    def __init__(self, name_match: str, on_done):
+        super().__init__(title=_("Forget and pair again"), content_width=420, can_close=False)
+        self.on_done = on_done
+        tb = Adw.ToolbarView()
+        tb.add_top_bar(Adw.HeaderBar(show_end_title_buttons=False, show_start_title_buttons=False))
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_start=24, margin_end=24, margin_top=12, margin_bottom=24)
+        self.spinner = Gtk.Spinner(spinning=True, halign=Gtk.Align.CENTER, width_request=32, height_request=32)
+        box.append(self.spinner)
+        self.headline = Gtk.Label(label=_("Working…"), css_classes=["title-3"], wrap=True, justify=Gtk.Justification.CENTER)
+        box.append(self.headline)
+        self.detail = Gtk.Label(label="", css_classes=["dim-label"], wrap=True, justify=Gtk.Justification.CENTER)
+        box.append(self.detail)
+        self.close_btn = Gtk.Button(label=_("Cancel"), halign=Gtk.Align.CENTER)
+        self.close_btn.connect("clicked", self._cancel_or_close)
+        box.append(self.close_btn)
+        tb.set_content(box)
+        self.set_child(tb)
+        self.proc = None
+        self.finished = False
+        exe = mousetouch_binary()
+        if not exe:
+            self._finish(False, _("Could not run mousetouch: {error}").format(error="mousetouch not found in PATH"))
+            return
+        try:
+            self.proc = Gio.Subprocess.new([exe, "bt-repair", name_match], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+        except GLib.Error as e:
+            self._finish(False, _("Could not run mousetouch: {error}").format(error=e.message))
+            return
+        self.out = Gio.DataInputStream.new(self.proc.get_stdout_pipe())
+        self.err = Gio.DataInputStream.new(self.proc.get_stderr_pipe())
+        self.err_text = ""
+        self.out.read_line_async(GLib.PRIORITY_DEFAULT, None, self._on_line)
+        self.err.read_line_async(GLib.PRIORITY_DEFAULT, None, self._on_err_line)
+        self.proc.wait_async(None, self._on_exit)
+
+    def _on_line(self, stream, result):
+        try:
+            line, _len = stream.read_line_finish_utf8(result)
+        except GLib.Error:
+            line = None
+        if line is None:
+            return
+        kind, _sep, text = line.partition(":")
+        text = text.strip()
+        if kind == "hint":
+            self.headline.set_label(_("Switch the mouse off and on"))
+        elif kind == "step":
+            self.detail.set_label(text)
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self._on_line)
+
+    def _on_err_line(self, stream, result):
+        try:
+            line, _len = stream.read_line_finish_utf8(result)
+        except GLib.Error:
+            line = None
+        if line is None:
+            return
+        self.err_text = line.strip() or self.err_text
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self._on_err_line)
+
+    def _on_exit(self, proc, result):
+        try:
+            proc.wait_finish(result)
+        except GLib.Error:
+            pass
+        ok = proc.get_if_exited() and proc.get_exit_status() == 0
+        err = self.err_text.removeprefix("Error:").strip()
+        self._finish(ok, "" if ok else _("Pairing failed: {error}").format(error=err or f"exit {proc.get_exit_status()}"))
+
+    def _finish(self, ok: bool, message: str):
+        self.finished = True
+        self.spinner.set_spinning(False)
+        self.spinner.set_visible(False)
+        self.headline.set_label(_("Paired again") if ok else message)
+        self.detail.set_label("")
+        self.close_btn.set_label(_("Close"))
+        self.close_btn.add_css_class("suggested-action")
+        self.set_can_close(True)
+        self.on_done(ok)
+
+    def _cancel_or_close(self, *_a):
+        if not self.finished and self.proc is not None:
+            self.proc.force_exit()
+        self.set_can_close(True)
+        self.close()
+
+
+class LiveWindow(Adw.Window):
+    """The live view on its own, with the event log, so it can sit next to
+    whatever you are testing. The pin button asks the compositor to keep it
+    on every workspace (sticky), which COSMIC exposes a protocol for."""
+
+    def __init__(self, app, client: EventClient):
+        super().__init__(application=app, title=_("MouseTouch · Live"), default_width=460, default_height=760)
+        self._pin_guard = False
+        tb = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        self.pin = Gtk.ToggleButton(icon_name="view-pin-symbolic")
+        self.pin.set_tooltip_text(f"{_('Keep on screen')} — {_('Stays visible while workspaces slide (sticky window)')}")
+        header.pack_start(self.pin)
+        clear = Gtk.Button(icon_name="edit-clear-all-symbolic", tooltip_text=_("Clear log"))
+        header.pack_end(clear)
+        tb.add_top_bar(header)
+        self.toast = Adw.ToastOverlay()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_start=12, margin_end=12, margin_top=6, margin_bottom=12)
+        self.view = MouseView(client)
+        box.append(self.view)
+        self.log = EventLog(client)
+        box.append(self.log)
+        clear.connect("clicked", lambda *_a: self.log.clear())
+        self.toast.set_child(box)
+        tb.set_content(self.toast)
+        self.set_content(tb)
+        self.pin.connect("toggled", self._on_pin)
+        if PREFS.get("live_pinned"):
+            # The compositor needs the mapped window before it can pin it.
+            GLib.timeout_add(500, lambda: self.pin.set_active(True) or False)
+
+    def _on_pin(self, btn):
+        if self._pin_guard:
+            return
+        on = btn.get_active()
+        ok, msg = set_window_sticky(self.get_title() or "", on)
+        if ok:
+            PREFS["live_pinned"] = on
+            try:
+                save_ui_prefs(PREFS)
+            except Exception:  # noqa: BLE001
+                pass
+            if on:
+                self.toast.add_toast(Adw.Toast(title=_("Pinned: the window stays on screen while workspaces slide")))
+            return
+        self.toast.add_toast(Adw.Toast(title=msg, timeout=8))
+        if on:
+            self._pin_guard = True
+            btn.set_active(False)
+            self._pin_guard = False
+
+
 class Window(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title=_("MouseTouch"), default_width=560, default_height=720)
@@ -1491,6 +3188,16 @@ class Window(Adw.ApplicationWindow):
         self.toast.set_child(page)
         tb.set_content(self.toast)
         self.set_content(tb)
+
+        grp = Adw.PreferencesGroup(title=_("Live view"),
+                                   description=_("What the daemon sees on the mouse as it happens: fingers, taps, swipes, pinch, scrolling and clicks."))
+        detach = Gtk.Button(icon_name="window-new-symbolic", valign=Gtk.Align.CENTER, css_classes=["flat"], tooltip_text=_("Open in its own window"))
+        detach.connect("clicked", lambda *_a: self.app.open_live())
+        grp.set_header_suffix(detach)
+        card = Gtk.Frame(css_classes=["card"])
+        card.set_child(MouseView(app.events, compact=True))
+        grp.add(card)
+        page.add(grp)
 
         ws = self.cfg["workspace_swipe"]
         grp = Adw.PreferencesGroup(title=_("Workspace swipe"),
@@ -1591,9 +3298,30 @@ class Window(Adw.ApplicationWindow):
         open_row.connect("activated", lambda *_a: Gio.AppInfo.launch_default_for_uri(CONFIG_PATH.as_uri(), None))
         grp.add(open_row)
         page.add(grp)
+
+        # Bluetooth: after the mouse was paired with a Mac, BlueZ keeps a
+        # record that is paired but not bonded and rejects it. The daemon's
+        # bt-check/bt-repair commands detect and fix that.
+        grp = Adw.PreferencesGroup(title=_("Bluetooth"))
+        self.bt_row = Adw.ActionRow(title=_("Mouse pairing"), subtitle=_("Checking…"))
+        self.bt_icon = Gtk.Image.new_from_icon_name("bluetooth-symbolic")
+        self.bt_row.add_prefix(self.bt_icon)
+        self.bt_button = Gtk.Button(label=_("Forget and pair again"), valign=Gtk.Align.CENTER)
+        self.bt_button.connect("clicked", self._confirm_repair)
+        self.bt_row.add_suffix(self.bt_button)
+        grp.add(self.bt_row)
+        page.add(grp)
+
         self._refresh_status()
+        self._refresh_bt()
         self._status_timer = GLib.timeout_add_seconds(5, self._refresh_status)
-        self.connect("close-request", lambda *_a: GLib.source_remove(self._status_timer) and False)
+        self._bt_timer = GLib.timeout_add_seconds(10, self._refresh_bt)
+        self.connect("close-request", self._stop_timers)
+
+    def _stop_timers(self, *_a):
+        GLib.source_remove(self._status_timer)
+        GLib.source_remove(self._bt_timer)
+        return False
 
     # -- state -----------------------------------------------------------
     def _set(self, section, key, value):
@@ -1699,6 +3427,58 @@ class Window(Adw.ApplicationWindow):
         GLib.timeout_add(800, self._refresh_status)
         self.toast.add_toast(Adw.Toast(title=_("Service restarted")))
 
+    # -- bluetooth -------------------------------------------------------
+    def _refresh_bt(self):
+        exe = mousetouch_binary()
+        if not exe:
+            self._set_bt_state("unknown")
+            return True
+        try:
+            proc = Gio.Subprocess.new([exe, "bt-check", self.cfg["general"]["device_match"]],
+                                      Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE)
+        except GLib.Error:
+            self._set_bt_state("unknown")
+            return True
+
+        def done(p, result):
+            try:
+                p.wait_finish(result)
+            except GLib.Error:
+                pass
+            code = p.get_exit_status() if p.get_if_exited() else -1
+            self._set_bt_state({0: "ok", 3: "stale", 4: "unpaired"}.get(code, "unknown"))
+
+        proc.wait_async(None, done)
+        return True
+
+    def _set_bt_state(self, state: str):
+        text, icon = {
+            "ok": (_("Paired and bonded"), "emblem-ok-symbolic"),
+            "stale": (_("Stale pairing: the mouse is rejected until it is paired again (happens after pairing it with a Mac)"), "dialog-warning-symbolic"),
+            "unpaired": (_("Not paired"), "bluetooth-disabled-symbolic"),
+        }.get(state, (_("Bluetooth status unavailable"), "bluetooth-symbolic"))
+        self.bt_row.set_subtitle(text)
+        self.bt_icon.set_from_icon_name(icon)
+        if state == "stale":
+            self.bt_button.add_css_class("suggested-action")
+        else:
+            self.bt_button.remove_css_class("suggested-action")
+
+    def _confirm_repair(self, *_a):
+        dlg = Adw.AlertDialog(heading=_("Forget and pair again"),
+                              body=_("Remove the mouse from Bluetooth and pair it fresh? When asked, switch the mouse off and on."))
+        dlg.add_response("cancel", _("Cancel"))
+        dlg.add_response("repair", _("Pair again"))
+        dlg.set_response_appearance("repair", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("repair")
+
+        def on_response(_d, response):
+            if response == "repair":
+                RepairDialog(self.cfg["general"]["device_match"], lambda _ok: self._refresh_bt()).present(self)
+
+        dlg.connect("response", on_response)
+        dlg.present(self)
+
 
 class App(Adw.Application):
     def __init__(self):
@@ -1706,6 +3486,18 @@ class App(Adw.Application):
         # Wayland picks the icon from the .desktop file matching APP_ID; this
         # covers X11/XWayland and a launch from a terminal.
         Gtk.Window.set_default_icon_name(APP_ID)
+        self.events = EventClient()
+        self.live = None
+
+    def open_live(self):
+        if self.live is None:
+            self.live = LiveWindow(self, self.events)
+            self.live.connect("close-request", self._live_closed)
+        self.live.present()
+
+    def _live_closed(self, *_a):
+        self.live = None
+        return False
 
     def do_activate(self):
         apply_theme(PREFS["theme"])
