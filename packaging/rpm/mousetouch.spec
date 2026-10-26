@@ -3,12 +3,12 @@
 # ready-made .rpm to every GitHub release, built with cargo-generate-rpm.
 # COPR note: enable "internet access during builds" for the project, or
 # vendor the crates, because `cargo build` downloads dependencies.
-Name:           magic-mouse-gestures
+Name:           mousetouch
 Version:        0.1.0
 Release:        1%{?dist}
 Summary:        Apple Magic Mouse multitouch gestures for Linux/Wayland
 License:        MIT
-URL:            https://github.com/Devace-93/magic-mouse-gestures
+URL:            https://github.com/Devace-93/mousetouch
 Source0:        %{url}/archive/refs/tags/v%{version}.tar.gz#/%{name}-%{version}.tar.gz
 
 BuildRequires:  cargo
@@ -35,7 +35,9 @@ cargo build --release --locked
 %install
 install -Dm755 target/release/%{name} %{buildroot}%{_bindir}/%{name}
 install -Dm755 ui/%{name}-settings %{buildroot}%{_bindir}/%{name}-settings
-install -Dm644 packaging/org.magicmouse.Gestures.desktop %{buildroot}%{_datadir}/applications/org.magicmouse.Gestures.desktop
+install -Dm644 packaging/net.3m4.MouseTouch.desktop %{buildroot}%{_datadir}/applications/net.3m4.MouseTouch.desktop
+%{_datadir}/icons/hicolor/scalable/apps/net.3m4.MouseTouch.svg
+install -Dm644 packaging/net.3m4.MouseTouch.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/net.3m4.MouseTouch.svg
 install -Dm644 packaging/60-%{name}.rules %{buildroot}%{_udevrulesdir}/60-%{name}.rules
 install -Dm644 packaging/%{name}.conf %{buildroot}%{_modulesloaddir}/%{name}.conf
 install -Dm644 packaging/%{name}.service %{buildroot}%{_userunitdir}/%{name}.service
@@ -58,7 +60,7 @@ fi
 %doc README.md
 %{_bindir}/%{name}
 %{_bindir}/%{name}-settings
-%{_datadir}/applications/org.magicmouse.Gestures.desktop
+%{_datadir}/applications/net.3m4.MouseTouch.desktop
 %{_udevrulesdir}/60-%{name}.rules
 %{_modulesloaddir}/%{name}.conf
 %{_userunitdir}/%{name}.service

@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Magic Mouse Gestures
-Comment=Configure Magic Mouse workspace swipes and tap gestures
-Exec=magic-mouse-gestures-settings
-Icon=input-mouse-symbolic
-Terminal=false
-Categories=Settings;HardwareSettings;
-Keywords=mouse;gesture;touch;workspace;magic;

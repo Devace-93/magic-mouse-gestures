@@ -21,7 +21,7 @@ jobs:
       - name: Test
         run: cargo test --locked
       - name: Settings app parses
-        run: python3 -m py_compile ui/magic-mouse-gestures-settings
+        run: python3 -m py_compile ui/mousetouch-settings
       - name: Installer script is valid shell
         run: |
           sh -n get.sh

@@ -1,20 +1,20 @@
 # Maintainer: Enrique Magallon <dev.ace.93.03@gmail.com>
 # AUR package building from the git repository (a -git package, so no
 # checksum is needed; `makepkg` always fetches the current main branch).
-pkgname=magic-mouse-gestures-git
-_pkgname=magic-mouse-gestures
+pkgname=mousetouch-git
+_pkgname=mousetouch
 pkgver=0.1.0.r0.g0000000
 pkgrel=1
 pkgdesc="Apple Magic Mouse multitouch gestures (workspace swipes, pinch, taps) for Linux/Wayland"
 arch=('x86_64' 'aarch64')
-url="https://github.com/Devace-93/magic-mouse-gestures"
+url="https://github.com/Devace-93/mousetouch"
 license=('MIT')
 depends=('systemd')
 makedepends=('git' 'cargo')
 optdepends=('python-gobject: settings app' 'gtk4: settings app' 'libadwaita: settings app')
 provides=("$_pkgname")
 conflicts=("$_pkgname")
-install=magic-mouse-gestures.install
+install=mousetouch.install
 source=("git+$url.git")
 sha256sums=('SKIP')
 
@@ -44,12 +44,13 @@ check() {
 
 package() {
   cd "$_pkgname"
-  install -Dm755 target/release/magic-mouse-gestures "$pkgdir/usr/bin/magic-mouse-gestures"
-  install -Dm755 ui/magic-mouse-gestures-settings "$pkgdir/usr/bin/magic-mouse-gestures-settings"
-  install -Dm644 packaging/org.magicmouse.Gestures.desktop "$pkgdir/usr/share/applications/org.magicmouse.Gestures.desktop"
-  install -Dm644 packaging/60-magic-mouse-gestures.rules "$pkgdir/usr/lib/udev/rules.d/60-magic-mouse-gestures.rules"
-  install -Dm644 packaging/magic-mouse-gestures.conf "$pkgdir/usr/lib/modules-load.d/magic-mouse-gestures.conf"
-  install -Dm644 packaging/magic-mouse-gestures.service "$pkgdir/usr/lib/systemd/user/magic-mouse-gestures.service"
+  install -Dm755 target/release/mousetouch "$pkgdir/usr/bin/mousetouch"
+  install -Dm755 ui/mousetouch-settings "$pkgdir/usr/bin/mousetouch-settings"
+  install -Dm644 packaging/net.3m4.MouseTouch.desktop "$pkgdir/usr/share/applications/net.3m4.MouseTouch.desktop"
+  install -Dm644 packaging/net.3m4.MouseTouch.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/net.3m4.MouseTouch.svg"
+  install -Dm644 packaging/60-mousetouch.rules "$pkgdir/usr/lib/udev/rules.d/60-mousetouch.rules"
+  install -Dm644 packaging/mousetouch.conf "$pkgdir/usr/lib/modules-load.d/mousetouch.conf"
+  install -Dm644 packaging/mousetouch.service "$pkgdir/usr/lib/systemd/user/mousetouch.service"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$_pkgname/LICENSE"
 }

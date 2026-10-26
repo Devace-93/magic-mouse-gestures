@@ -5,7 +5,7 @@ case "$1" in
     remove|upgrade)
         if command -v systemctl >/dev/null 2>&1 && command -v loginctl >/dev/null 2>&1; then
             for user in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $2}'); do
-                systemctl --user --machine="${user}@.host" stop magic-mouse-gestures.service >/dev/null 2>&1 || true
+                systemctl --user --machine="${user}@.host" stop mousetouch.service >/dev/null 2>&1 || true
             done
         fi
         ;;

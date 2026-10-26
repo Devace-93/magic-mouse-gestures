@@ -1,7 +1,7 @@
 #!/usr/bin/python3
-"""Settings UI for magic-mouse-gestures (GTK4 + libadwaita).
+"""Settings UI for mousetouch (GTK4 + libadwaita).
 
-Edits ~/.config/magic-mouse-gestures/config.toml. The daemon watches the file
+Edits ~/.config/mousetouch/config.toml. The daemon watches the file
 and reloads on every save, so changes apply immediately.
 """
 import os
@@ -16,10 +16,10 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
-APP_ID = "org.magicmouse.Gestures"
-SERVICE = "magic-mouse-gestures.service"
+APP_ID = "net.3m4.MouseTouch"
+SERVICE = "mousetouch.service"
 
-CONFIG_PATH = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "magic-mouse-gestures" / "config.toml"
+CONFIG_PATH = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "mousetouch" / "config.toml"
 
 DEFAULTS = {
     "general": {"device_match": "Magic Mouse", "suppress_scroll_from_fingers": 2},
@@ -86,8 +86,8 @@ def _toml_value(v) -> str:
 
 def dump_config(cfg: dict) -> str:
     out = [
-        "# magic-mouse-gestures configuration",
-        "# Edit by hand or with `magic-mouse-gestures-settings`. The daemon reloads on save.",
+        "# mousetouch configuration",
+        "# Edit by hand or with `mousetouch-settings`. The daemon reloads on save.",
         "",
     ]
     for section in ("general", "workspace_swipe", "pinch", "scroll", "taps"):
@@ -281,7 +281,7 @@ class GestureDialog(Adw.Dialog):
 
 class Window(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Magic Mouse Gestures", default_width=560, default_height=720)
+        super().__init__(application=app, title="MouseTouch", default_width=560, default_height=720)
         self.cfg = load_config()
         self._save_id = 0
 
@@ -463,6 +463,9 @@ class Window(Adw.ApplicationWindow):
 class App(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        # Wayland picks the icon from the .desktop file matching APP_ID; this
+        # covers X11/XWayland and a launch from a terminal.
+        Gtk.Window.set_default_icon_name(APP_ID)
 
     def do_activate(self):
         win = self.props.active_window or Window(self)

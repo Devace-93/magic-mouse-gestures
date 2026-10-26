@@ -1,4 +1,4 @@
-//! magic-mouse-gestures: userspace driver that adds desktop gestures to the
+//! mousetouch: userspace driver that adds desktop gestures to the
 //! Apple Magic Mouse on Linux.
 //!
 //! The daemon grabs the mouse's evdev node, forwards normal pointer events
@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use virt::{VirtualKeyboard, VirtualMouse, VirtualTouchpad, VIRTUAL_SUFFIX};
 
 const USAGE: &str = "\
-magic-mouse-gestures [OPTIONS] [COMMAND]
+mousetouch [OPTIONS] [COMMAND]
 
 Commands:
   run                 Run the daemon (default)
@@ -45,7 +45,7 @@ Commands:
                       double tap) or double-tap-1 [N times]
 
 Options:
-  -c, --config PATH   Config file (default: ~/.config/magic-mouse-gestures/config.toml)
+  -c, --config PATH   Config file (default: ~/.config/mousetouch/config.toml)
   -v, --verbose       Debug logging
   -V, --version       Print the version
   -h, --help          Show this help";
@@ -65,7 +65,7 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             "-V" | "--version" => {
-                println!("magic-mouse-gestures {}", env!("CARGO_PKG_VERSION"));
+                println!("mousetouch {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
             other if other.starts_with('-') => anyhow::bail!("unknown option {other}\n{USAGE}"),

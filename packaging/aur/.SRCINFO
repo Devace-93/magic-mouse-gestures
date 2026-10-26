@@ -1,9 +1,9 @@
-pkgbase = magic-mouse-gestures-git
+pkgbase = mousetouch-git
 	pkgdesc = Apple Magic Mouse multitouch gestures (workspace swipes, pinch, taps) for Linux/Wayland
 	pkgver = 0.1.0.r0.g0000000
 	pkgrel = 1
-	url = https://github.com/Devace-93/magic-mouse-gestures
-	install = magic-mouse-gestures.install
+	url = https://github.com/Devace-93/mousetouch
+	install = mousetouch.install
 	arch = x86_64
 	arch = aarch64
 	license = MIT
@@ -13,9 +13,9 @@ pkgbase = magic-mouse-gestures-git
 	optdepends = python-gobject: settings app
 	optdepends = gtk4: settings app
 	optdepends = libadwaita: settings app
-	provides = magic-mouse-gestures
-	conflicts = magic-mouse-gestures
-	source = git+https://github.com/Devace-93/magic-mouse-gestures.git
+	provides = mousetouch
+	conflicts = mousetouch
+	source = git+https://github.com/Devace-93/mousetouch.git
 	sha256sums = SKIP
 
-pkgname = magic-mouse-gestures-git
+pkgname = mousetouch-git

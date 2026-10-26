@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 /// Suffix appended to every virtual device name so the daemon never grabs its
 /// own devices.
-pub const VIRTUAL_SUFFIX: &str = "(mmg)";
+pub const VIRTUAL_SUFFIX: &str = "(mousetouch)";
 
 #[allow(non_snake_case)]
 fn SYN_REPORT() -> InputEvent {
@@ -141,7 +141,7 @@ impl VirtualTouchpad {
         let axis_y = AbsInfo::new(0, 0, max_y, 0, 0, PAD_RES);
 
         let dev = VirtualDevice::builder()?
-            .name(&format!("Magic Mouse Gestures Touchpad {VIRTUAL_SUFFIX}"))
+            .name(&format!("MouseTouch Touchpad {VIRTUAL_SUFFIX}"))
             // Bluetooth bus => libinput treats it as an external touchpad and
             // does not pair it with the keyboard for disable-while-typing.
             .input_id(InputId::new(BusType::BUS_BLUETOOTH, 0x1209, 0x6d67, 1))
@@ -318,7 +318,7 @@ impl VirtualKeyboard {
             keys.insert(KeyCode(code));
         }
         let dev = VirtualDevice::builder()?
-            .name(&format!("Magic Mouse Gestures Keyboard {VIRTUAL_SUFFIX}"))
+            .name(&format!("MouseTouch Keyboard {VIRTUAL_SUFFIX}"))
             .input_id(InputId::new(BusType::BUS_VIRTUAL, 0x1209, 0x6d68, 1))
             .with_keys(&keys)?
             .build()
