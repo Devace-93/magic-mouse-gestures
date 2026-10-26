@@ -83,6 +83,10 @@ jobs:
     name: Publish release
     needs: build
     runs-on: ubuntu-24.04
+    env:
+      # `secrets` is not allowed in a step `if`, and a step-level env is not
+      # visible to that step's own `if`; a job-level env bridges the two.
+      HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -109,7 +113,7 @@ jobs:
           generate_release_notes: true
 
       - name: Update the Homebrew tap
-        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        if: env.HAS_TAP_TOKEN == 'true'
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
