@@ -33,6 +33,8 @@ from gi.repository import Adw, Gio, GLib, Gtk, Pango, PangoCairo  # noqa: E402
 
 APP_ID = "io.github.Devace_93.MouseTouch"
 SERVICE = "mousetouch.service"
+# `brew services start mousetouch` runs the daemon under its own unit name.
+SERVICE_CANDIDATES = [SERVICE, "sh.brew.mousetouch.service", "homebrew.mousetouch.service"]
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "mousetouch"
 CONFIG_PATH = CONFIG_DIR / "config.toml"
@@ -2323,13 +2325,32 @@ def describe_gesture(g: dict) -> str:
     return s
 
 
-def service_status() -> tuple[str, bool]:
+def _unit_state(unit: str) -> str:
     try:
-        r = subprocess.run(["systemctl", "--user", "is-active", SERVICE], capture_output=True, text=True, timeout=3)
-        state = r.stdout.strip() or "unknown"
-    except Exception:
-        state = "unknown"
-    return state, state == "active"
+        r = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True, timeout=3)
+        return r.stdout.strip() or "unknown"
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def service_unit() -> str:
+    """The unit the daemon runs under: the first candidate that is active,
+    else a Homebrew unit that exists, else the packaged one."""
+    states = {unit: _unit_state(unit) for unit in SERVICE_CANDIDATES}
+    for unit, state in states.items():
+        if state == "active":
+            return unit
+    user_units = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd" / "user"
+    for unit in SERVICE_CANDIDATES[1:]:
+        if (user_units / unit).exists():
+            return unit
+    return SERVICE
+
+
+def service_status() -> tuple[str, str, bool]:
+    unit = service_unit()
+    state = _unit_state(unit)
+    return unit, state, state == "active"
 
 
 # ---------------------------------------------------------------------------
@@ -3417,13 +3438,13 @@ class Window(Adw.ApplicationWindow):
 
     # -- daemon ----------------------------------------------------------
     def _refresh_status(self):
-        state, ok = service_status()
-        self.status_row.set_subtitle(f"{SERVICE}: {state}")
+        unit, state, ok = service_status()
+        self.status_row.set_subtitle(f"{unit}: {state}")
         self.status_icon.set_from_icon_name("emblem-ok-symbolic" if ok else "dialog-warning-symbolic")
         return True
 
     def _restart(self, *_a):
-        subprocess.run(["systemctl", "--user", "restart", SERVICE], check=False)
+        subprocess.run(["systemctl", "--user", "restart", service_unit()], check=False)
         GLib.timeout_add(800, self._refresh_status)
         self.toast.add_toast(Adw.Toast(title=_("Service restarted")))
 
