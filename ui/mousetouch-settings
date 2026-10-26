@@ -3,7 +3,12 @@
 
 Edits ~/.config/mousetouch/config.toml. The daemon watches the file
 and reloads on every save, so changes apply immediately.
+
+Theme and language follow the desktop by default and can be overridden
+from the Appearance group; those two preferences live in ui.toml next to the
+config so the daemon never sees them.
 """
+import locale
 import os
 import subprocess
 import sys
@@ -16,10 +21,1188 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
-APP_ID = "net.3m4.MouseTouch"
+APP_ID = "io.github.Devace_93.MouseTouch"
 SERVICE = "mousetouch.service"
 
-CONFIG_PATH = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "mousetouch" / "config.toml"
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "mousetouch"
+CONFIG_PATH = CONFIG_DIR / "config.toml"
+UI_PREFS_PATH = CONFIG_DIR / "ui.toml"
+
+# ---------------------------------------------------------------------------
+# i18n. Same locale list as the 3m4.net pages; catalogs are keyed by base
+# language and map the English source string to its translation.
+# ---------------------------------------------------------------------------
+
+LANGS = [
+    ("es-MX", "🇲🇽", "Español (México)"), ("es-ES", "🇪🇸", "Español (España)"),
+    ("es-CO", "🇨🇴", "Español (Colombia)"), ("es-AR", "🇦🇷", "Español (Argentina)"),
+    ("es-CL", "🇨🇱", "Español (Chile)"), ("es-PE", "🇵🇪", "Español (Perú)"),
+    ("en-US", "🇺🇸", "English (US)"), ("en-GB", "🇬🇧", "English (UK)"),
+    ("en-CA", "🇨🇦", "English (Canada)"), ("en-AU", "🇦🇺", "English (Australia)"),
+    ("en-NZ", "🇳🇿", "English (New Zealand)"), ("fr-FR", "🇫🇷", "Français (France)"),
+    ("de-DE", "🇩🇪", "Deutsch (Deutschland)"), ("de-AT", "🇦🇹", "Deutsch (Österreich)"),
+    ("it-IT", "🇮🇹", "Italiano (Italia)"), ("pt-BR", "🇧🇷", "Português (Brasil)"),
+    ("pt-PT", "🇵🇹", "Português (Portugal)"), ("nl-NL", "🇳🇱", "Nederlands (Nederland)"),
+    ("sv-SE", "🇸🇪", "Svenska (Sverige)"), ("pl-PL", "🇵🇱", "Polski (Polska)"),
+    ("cs-CZ", "🇨🇿", "Čeština (Česko)"), ("ro-RO", "🇷🇴", "Română (România)"),
+    ("el-GR", "🇬🇷", "Ελληνικά (Ελλάδα)"), ("uk-UA", "🇺🇦", "Українська (Україна)"),
+    ("ru-RU", "🇷🇺", "Русский (Россия)"), ("tr-TR", "🇹🇷", "Türkçe (Türkiye)"),
+    ("ar-SA", "🇸🇦", "العربية (السعودية)"), ("hi-IN", "🇮🇳", "हिन्दी (भारत)"),
+    ("zh-CN", "🇨🇳", "中文（中国）"), ("ja-JP", "🇯🇵", "日本語（日本）"),
+    ("ko-KR", "🇰🇷", "한국어 (대한민국)"), ("vi-VN", "🇻🇳", "Tiếng Việt (Việt Nam)"),
+    ("id-ID", "🇮🇩", "Bahasa Indonesia (Indonesia)"), ("th-TH", "🇹🇭", "ไทย (ประเทศไทย)"),
+]
+LANG_CODES = [c for c, _f, _n in LANGS]
+THEMES = ["system", "light", "dark"]
+
+CATALOG: dict[str, dict[str, str]] = {"en": {}}
+
+
+def load_ui_prefs() -> dict:
+    prefs = {"theme": "system", "language": "system"}
+    try:
+        with open(UI_PREFS_PATH, "rb") as f:
+            data = tomllib.load(f)
+    except (FileNotFoundError, tomllib.TOMLDecodeError):
+        return prefs
+    if data.get("theme") in THEMES:
+        prefs["theme"] = data["theme"]
+    lang = data.get("language")
+    if lang == "system" or lang in LANG_CODES:
+        prefs["language"] = lang
+    return prefs
+
+
+def save_ui_prefs(prefs: dict) -> None:
+    UI_PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    body = (
+        "# mousetouch settings app preferences (not read by the daemon)\n"
+        f'theme = "{prefs["theme"]}"        # system, light or dark\n'
+        f'language = "{prefs["language"]}"  # system or a locale code like es-MX\n'
+    )
+    tmp = UI_PREFS_PATH.with_suffix(".toml.tmp")
+    tmp.write_text(body)
+    tmp.replace(UI_PREFS_PATH)
+
+
+def system_lang() -> str:
+    """The desktop language mapped onto our locale list ('es_MX.UTF-8' -> 'es-MX')."""
+    raw = ""
+    for var in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        if os.environ.get(var):
+            raw = os.environ[var]
+            break
+    if not raw:
+        try:
+            raw = locale.getlocale()[0] or ""
+        except ValueError:
+            raw = ""
+    raw = raw.split(".")[0].split("@")[0].replace("_", "-")
+    if raw in LANG_CODES:
+        return raw
+    base = raw[:2].lower()
+    for code in LANG_CODES:
+        if code.startswith(base):
+            return code
+    return "en-US"
+
+
+PREFS = load_ui_prefs()
+LANG = system_lang() if PREFS["language"] == "system" else PREFS["language"]
+
+
+def _(text: str) -> str:
+    base = LANG[:2]
+    return CATALOG.get(base, {}).get(text) or text
+
+
+def apply_theme(theme: str) -> None:
+    sm = Adw.StyleManager.get_default()
+    sm.set_color_scheme({
+        "light": Adw.ColorScheme.FORCE_LIGHT,
+        "dark": Adw.ColorScheme.FORCE_DARK,
+    }.get(theme, Adw.ColorScheme.DEFAULT))
+
+
+# Translations: CATALOG["xx"] = {"English source": "translation", ...}
+
+CATALOG["es"] = {
+    "Swipe": "Deslizar", "Tap": "Toque", "Double tap": "Doble toque",
+    "Left": "Izquierda", "Right": "Derecha", "Up": "Arriba", "Down": "Abajo",
+    "Keyboard shortcut": "Atajo de teclado", "Toggle two shortcuts": "Alternar dos atajos", "Cycle through shortcuts": "Ciclar entre atajos",
+    "Mouse button": "Botón del mouse", "Run command": "Ejecutar comando",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "p. ej. super+w, ctrl+alt+right, o una secuencia: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "Primer disparo (on), p. ej. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Pasos separados por ; p. ej. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right o middle", "shell command, e.g. notify-send hi": "comando de shell, p. ej. notify-send hola",
+    "Direction": "Dirección", "Only for swipes": "Solo para deslizamientos", "System language": "Idioma del sistema",
+    "Shortcut: {value}": "Atajo: {value}", "Toggle: {on}  ⇄  {off}": "Alternar: {on}  ⇄  {off}", "Cycle: {steps}": "Ciclo: {steps}",
+    "Click: {button}": "Clic: {button}", "Run: {command}": "Ejecutar: {command}",
+    "{kind} · {n} finger": "{kind} · {n} dedo", "{kind} · {n} fingers": "{kind} · {n} dedos",
+    "Gesture": "Gesto", "Cancel": "Cancelar", "Save": "Guardar", "Trigger": "Disparador", "Type": "Tipo", "Fingers": "Dedos",
+    "Action": "Acción", "Do": "Hacer", "Second trigger (off), e.g. ctrl+0": "Segundo disparo (off), p. ej. ctrl+0", "Scope": "Alcance",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Déjalo vacío para todas las apps. Si no, la regla solo se dispara cuando el id de la ventana enfocada contiene este texto (p. ej. firefox). Necesita COSMIC, KDE, Sway o Hyprland.",
+    "Only in app": "Solo en la app", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Cambio de escritorio", "Continuous swipe that follows your fingers using the desktop's native animation.": "Deslizamiento continuo que sigue tus dedos con la animación nativa del escritorio.",
+    "Enabled": "Activado", "Fingers on the mouse": "Dedos sobre el mouse",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Natural: desliza a la izquierda para ir al siguiente escritorio (estilo macOS)",
+    "Sensitivity": "Sensibilidad", "Higher = less finger travel per workspace": "Más alto = menos recorrido del dedo por escritorio",
+    "Activation distance (mm)": "Distancia de activación (mm)", "Finger travel before a swipe starts": "Recorrido del dedo antes de que empiece el deslizamiento",
+    "Desktop gesture fingers": "Dedos del gesto del escritorio", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Dedos que el escritorio espera para cambiar de escritorio: 4 en COSMIC, 3 en GNOME",
+    "Axis": "Eje", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Dirección en la que tu escritorio ordena los espacios de trabajo. Ambos: fija la primera dirección y deja decidir al escritorio (GNOME: vertical = vista general)",
+    "Desktop touchpad natural scrolling": "Scroll natural del touchpad del escritorio", "Leave on Auto unless the swipe goes the wrong way": "Déjalo en Auto salvo que el deslizamiento vaya al revés",
+    "Pinch zoom": "Zoom con pellizco", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Dos dedos que se separan o se juntan se convierten en el gesto de pellizco nativo del escritorio.",
+    "1.0 = same zoom as a touchpad": "1.0 = mismo zoom que un touchpad", "Change in finger distance before a pinch starts": "Cambio de distancia entre dedos antes de que empiece el pellizco",
+    "Scrolling": "Scroll", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "El scroll con un dedo suele empezar con un pequeño salto al revés mientras la yema se asienta en la carcasa.",
+    "Filter the backwards jump": "Filtrar el salto hacia atrás", "Hold the first wheel events until the direction is clear": "Retener los primeros eventos de rueda hasta que la dirección sea clara",
+    "Movement before scrolling starts": "Movimiento antes de que empiece el scroll", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "En unidades de rueda, 120 = una muesca; súbelo si el scroll aún empieza al revés, bájalo si empieza tarde",
+    "Mode": "Modo", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Muescas enteras es la sensación clásica de rueda; suave es más fino pero más rápido en terminales",
+    "Speed": "Velocidad", "Multiplier on scroll distance": "Multiplicador de la distancia de scroll",
+    "Gestures": "Gestos", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Toques y deslizamientos rápidos que disparan una acción una vez, opcionalmente solo en una app.",
+    "Tap timing": "Tiempos de toque", "Tap max duration (ms)": "Duración máxima del toque (ms)", "Tap max movement (mm)": "Movimiento máximo del toque (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "Las yemas ruedan 7-13 mm sobre la superficie curva", "Tap max lift speed (mm/s)": "Velocidad máxima al levantar (mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "El dedo debe estar casi quieto al levantarse; los golpes rápidos son más veloces", "Double tap window (ms)": "Ventana del doble toque (ms)",
+    "Advanced": "Avanzado", "Mute scrolling from N fingers": "Silenciar el scroll a partir de N dedos",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Descartar la emulación de rueda del driver mientras tocan tantos dedos (0 = nunca)",
+    "Device name contains": "El nombre del dispositivo contiene",
+    "Appearance": "Apariencia", "Theme": "Tema", "System: follow the desktop's light/dark setting": "Sistema: seguir el ajuste claro/oscuro del escritorio",
+    "Language": "Idioma", "Follows your desktop language; pick one to override": "Sigue el idioma del escritorio; elige uno para cambiarlo",
+    "Daemon": "Daemon", "Background service": "Servicio en segundo plano", "Restart": "Reiniciar", "Config file": "Archivo de configuración",
+    "only in {app}": "solo en {app}", "No gestures yet": "Aún no hay gestos", "Use + to add one": "Usa + para añadir uno", "Service restarted": "Servicio reiniciado",
+    "Natural": "Natural", "Inverted": "Invertida", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Horizontal", "Vertical": "Vertical", "Both": "Ambos", "Auto-detect": "Autodetectar", "On": "Activado", "Off": "Desactivado",
+    "Whole notches": "Muescas enteras", "Smooth steps": "Pasos suaves", "System": "Sistema", "Light": "Claro", "Dark": "Oscuro",
+    "Could not save: {error}": "No se pudo guardar: {error}",
+}
+
+CATALOG["fr"] = {
+    "Swipe": "Balayage", "Tap": "Tapotement", "Double tap": "Double tapotement",
+    "Left": "Gauche", "Right": "Droite", "Up": "Haut", "Down": "Bas",
+    "Keyboard shortcut": "Raccourci clavier", "Toggle two shortcuts": "Basculer entre deux raccourcis", "Cycle through shortcuts": "Cycler entre des raccourcis",
+    "Mouse button": "Bouton de souris", "Run command": "Exécuter une commande",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "ex. super+w, ctrl+alt+right, ou une séquence : ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "Premier déclencheur (on), ex. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Étapes séparées par ; ex. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right ou middle", "shell command, e.g. notify-send hi": "commande shell, ex. notify-send salut",
+    "Direction": "Direction", "Only for swipes": "Seulement pour les balayages", "System language": "Langue du système",
+    "Shortcut: {value}": "Raccourci : {value}", "Toggle: {on}  ⇄  {off}": "Bascule : {on}  ⇄  {off}", "Cycle: {steps}": "Cycle : {steps}",
+    "Click: {button}": "Clic : {button}", "Run: {command}": "Exécuter : {command}",
+    "{kind} · {n} finger": "{kind} · {n} doigt", "{kind} · {n} fingers": "{kind} · {n} doigts",
+    "Gesture": "Geste", "Cancel": "Annuler", "Save": "Enregistrer", "Trigger": "Déclencheur", "Type": "Type", "Fingers": "Doigts",
+    "Action": "Action", "Do": "Faire", "Second trigger (off), e.g. ctrl+0": "Second déclencheur (off), ex. ctrl+0", "Scope": "Portée",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Laissez vide pour toutes les apps. Sinon la règle ne se déclenche que si l'identifiant de la fenêtre active contient ce texte (ex. firefox). Nécessite COSMIC, KDE, Sway ou Hyprland.",
+    "Only in app": "Seulement dans l'app", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Balayage entre bureaux", "Continuous swipe that follows your fingers using the desktop's native animation.": "Balayage continu qui suit vos doigts avec l'animation native du bureau.",
+    "Enabled": "Activé", "Fingers on the mouse": "Doigts sur la souris",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Naturel : balayez vers la gauche pour passer au bureau suivant (style macOS)",
+    "Sensitivity": "Sensibilité", "Higher = less finger travel per workspace": "Plus élevé = moins de déplacement du doigt par bureau",
+    "Activation distance (mm)": "Distance d'activation (mm)", "Finger travel before a swipe starts": "Déplacement du doigt avant le début du balayage",
+    "Desktop gesture fingers": "Doigts du geste du bureau", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Doigts attendus par le bureau pour changer de bureau : 4 pour COSMIC, 3 pour GNOME",
+    "Axis": "Axe", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Direction dans laquelle votre bureau range les espaces de travail. Les deux : verrouille la première direction et laisse le bureau décider (GNOME : vertical = vue d'ensemble)",
+    "Desktop touchpad natural scrolling": "Défilement naturel du pavé tactile du bureau", "Leave on Auto unless the swipe goes the wrong way": "Laissez sur Auto sauf si le balayage va dans le mauvais sens",
+    "Pinch zoom": "Zoom par pincement", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Deux doigts qui s'écartent ou se rapprochent deviennent le geste de pincement natif du bureau.",
+    "1.0 = same zoom as a touchpad": "1.0 = même zoom qu'un pavé tactile", "Change in finger distance before a pinch starts": "Variation de distance entre les doigts avant le début du pincement",
+    "Scrolling": "Défilement", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "Le défilement à un doigt commence souvent par un petit saut dans le mauvais sens pendant que le doigt se pose sur la coque.",
+    "Filter the backwards jump": "Filtrer le saut en arrière", "Hold the first wheel events until the direction is clear": "Retenir les premiers événements de molette jusqu'à ce que la direction soit claire",
+    "Movement before scrolling starts": "Mouvement avant le début du défilement", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "En unités de molette, 120 = un cran ; augmentez si le défilement commence encore à l'envers, baissez s'il commence tard",
+    "Mode": "Mode", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Crans entiers : sensation classique de molette ; fluide : plus fin mais plus rapide dans les terminaux",
+    "Speed": "Vitesse", "Multiplier on scroll distance": "Multiplicateur de la distance de défilement",
+    "Gestures": "Gestes", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Tapotements et balayages rapides qui déclenchent une action une fois, éventuellement dans une seule app.",
+    "Tap timing": "Temporisation des tapotements", "Tap max duration (ms)": "Durée max du tapotement (ms)", "Tap max movement (mm)": "Mouvement max du tapotement (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "Le bout des doigts roule de 7 à 13 mm sur la surface courbe", "Tap max lift speed (mm/s)": "Vitesse max au relâchement (mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "Le doigt doit être presque immobile en se relevant ; les pichenettes sont plus rapides", "Double tap window (ms)": "Fenêtre du double tapotement (ms)",
+    "Advanced": "Avancé", "Mute scrolling from N fingers": "Couper le défilement à partir de N doigts",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Ignorer l'émulation de molette du pilote tant que ce nombre de doigts touche (0 = jamais)",
+    "Device name contains": "Le nom du périphérique contient",
+    "Appearance": "Apparence", "Theme": "Thème", "System: follow the desktop's light/dark setting": "Système : suivre le réglage clair/sombre du bureau",
+    "Language": "Langue", "Follows your desktop language; pick one to override": "Suit la langue du bureau ; choisissez-en une pour la remplacer",
+    "Daemon": "Démon", "Background service": "Service en arrière-plan", "Restart": "Redémarrer", "Config file": "Fichier de configuration",
+    "only in {app}": "seulement dans {app}", "No gestures yet": "Aucun geste pour l'instant", "Use + to add one": "Utilisez + pour en ajouter un", "Service restarted": "Service redémarré",
+    "Natural": "Naturel", "Inverted": "Inversé", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Horizontal", "Vertical": "Vertical", "Both": "Les deux", "Auto-detect": "Détection automatique", "On": "Activé", "Off": "Désactivé",
+    "Whole notches": "Crans entiers", "Smooth steps": "Pas fluides", "System": "Système", "Light": "Clair", "Dark": "Sombre",
+    "Could not save: {error}": "Impossible d'enregistrer : {error}",
+}
+
+CATALOG["de"] = {
+    "Swipe": "Wischen", "Tap": "Tipp", "Double tap": "Doppeltipp",
+    "Left": "Links", "Right": "Rechts", "Up": "Oben", "Down": "Unten",
+    "Keyboard shortcut": "Tastenkürzel", "Toggle two shortcuts": "Zwischen zwei Kürzeln umschalten", "Cycle through shortcuts": "Kürzel durchlaufen",
+    "Mouse button": "Maustaste", "Run command": "Befehl ausführen",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "z. B. super+w, ctrl+alt+right oder eine Folge: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "Erster Auslöser (on), z. B. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Schritte getrennt durch ; z. B. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right oder middle", "shell command, e.g. notify-send hi": "Shell-Befehl, z. B. notify-send hallo",
+    "Direction": "Richtung", "Only for swipes": "Nur für Wischgesten", "System language": "Systemsprache",
+    "Shortcut: {value}": "Kürzel: {value}", "Toggle: {on}  ⇄  {off}": "Umschalten: {on}  ⇄  {off}", "Cycle: {steps}": "Zyklus: {steps}",
+    "Click: {button}": "Klick: {button}", "Run: {command}": "Ausführen: {command}",
+    "{kind} · {n} finger": "{kind} · {n} Finger", "{kind} · {n} fingers": "{kind} · {n} Finger",
+    "Gesture": "Geste", "Cancel": "Abbrechen", "Save": "Speichern", "Trigger": "Auslöser", "Type": "Typ", "Fingers": "Finger",
+    "Action": "Aktion", "Do": "Tun", "Second trigger (off), e.g. ctrl+0": "Zweiter Auslöser (off), z. B. ctrl+0", "Scope": "Geltungsbereich",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Leer lassen für alle Apps. Sonst greift die Regel nur, wenn die App-ID des fokussierten Fensters diesen Text enthält (z. B. firefox). Braucht COSMIC, KDE, Sway oder Hyprland.",
+    "Only in app": "Nur in App", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Arbeitsflächen-Wischen", "Continuous swipe that follows your fingers using the desktop's native animation.": "Kontinuierliches Wischen, das den Fingern mit der nativen Animation des Desktops folgt.",
+    "Enabled": "Aktiviert", "Fingers on the mouse": "Finger auf der Maus",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Natürlich: nach links wischen für die nächste Arbeitsfläche (wie macOS)",
+    "Sensitivity": "Empfindlichkeit", "Higher = less finger travel per workspace": "Höher = weniger Fingerweg pro Arbeitsfläche",
+    "Activation distance (mm)": "Aktivierungsdistanz (mm)", "Finger travel before a swipe starts": "Fingerweg, bevor ein Wischen beginnt",
+    "Desktop gesture fingers": "Finger der Desktop-Geste", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Finger, die der Desktop für einen Arbeitsflächen-Wisch erwartet: 4 bei COSMIC, 3 bei GNOME",
+    "Axis": "Achse", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Richtung, in der dein Desktop Arbeitsflächen anordnet. Beide: auf die erste Richtung festlegen und den Desktop entscheiden lassen (GNOME: vertikal = Übersicht)",
+    "Desktop touchpad natural scrolling": "Natürliches Scrollen des Desktop-Touchpads", "Leave on Auto unless the swipe goes the wrong way": "Auf Auto lassen, außer das Wischen geht in die falsche Richtung",
+    "Pinch zoom": "Pinch-Zoom", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Zwei Finger, die sich spreizen oder zusammenziehen, werden zur nativen Pinch-Geste des Desktops.",
+    "1.0 = same zoom as a touchpad": "1.0 = gleicher Zoom wie ein Touchpad", "Change in finger distance before a pinch starts": "Änderung des Fingerabstands, bevor ein Pinch beginnt",
+    "Scrolling": "Scrollen", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "Ein-Finger-Scrollen beginnt oft mit einem kurzen Sprung in die falsche Richtung, während sich die Fingerkuppe auf der Schale setzt.",
+    "Filter the backwards jump": "Rückwärtssprung filtern", "Hold the first wheel events until the direction is clear": "Die ersten Rad-Ereignisse zurückhalten, bis die Richtung klar ist",
+    "Movement before scrolling starts": "Bewegung, bevor das Scrollen beginnt", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "In Rad-Einheiten, 120 = eine Raste; erhöhen, wenn das Scrollen noch rückwärts beginnt, senken, wenn es spät beginnt",
+    "Mode": "Modus", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Ganze Rasten ist das klassische Radgefühl; fließend ist feiner, aber in Terminals schneller",
+    "Speed": "Geschwindigkeit", "Multiplier on scroll distance": "Multiplikator für die Scrolldistanz",
+    "Gestures": "Gesten", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Tipps und schnelle Wischgesten, die eine Aktion einmal auslösen, optional nur in einer App.",
+    "Tap timing": "Tipp-Zeiten", "Tap max duration (ms)": "Max. Tippdauer (ms)", "Tap max movement (mm)": "Max. Tippbewegung (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "Fingerkuppen rollen 7–13 mm auf der gewölbten Fläche", "Tap max lift speed (mm/s)": "Max. Abhebegeschwindigkeit (mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "Der Finger muss beim Abheben fast still sein; Schnipser sind schneller", "Double tap window (ms)": "Doppeltipp-Fenster (ms)",
+    "Advanced": "Erweitert", "Mute scrolling from N fingers": "Scrollen ab N Fingern stummschalten",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Die Scrollrad-Emulation des Treibers verwerfen, solange so viele Finger aufliegen (0 = nie)",
+    "Device name contains": "Gerätename enthält",
+    "Appearance": "Erscheinungsbild", "Theme": "Thema", "System: follow the desktop's light/dark setting": "System: der Hell/Dunkel-Einstellung des Desktops folgen",
+    "Language": "Sprache", "Follows your desktop language; pick one to override": "Folgt der Desktop-Sprache; wähle eine, um sie zu überschreiben",
+    "Daemon": "Daemon", "Background service": "Hintergrunddienst", "Restart": "Neu starten", "Config file": "Konfigurationsdatei",
+    "only in {app}": "nur in {app}", "No gestures yet": "Noch keine Gesten", "Use + to add one": "Mit + eine hinzufügen", "Service restarted": "Dienst neu gestartet",
+    "Natural": "Natürlich", "Inverted": "Umgekehrt", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Horizontal", "Vertical": "Vertikal", "Both": "Beide", "Auto-detect": "Automatisch erkennen", "On": "An", "Off": "Aus",
+    "Whole notches": "Ganze Rasten", "Smooth steps": "Fließende Schritte", "System": "System", "Light": "Hell", "Dark": "Dunkel",
+    "Could not save: {error}": "Konnte nicht speichern: {error}",
+}
+
+CATALOG["it"] = {
+    "Swipe": "Scorrimento", "Tap": "Tocco", "Double tap": "Doppio tocco",
+    "Left": "Sinistra", "Right": "Destra", "Up": "Su", "Down": "Giù",
+    "Keyboard shortcut": "Scorciatoia da tastiera", "Toggle two shortcuts": "Alterna due scorciatoie", "Cycle through shortcuts": "Cicla tra scorciatoie",
+    "Mouse button": "Pulsante del mouse", "Run command": "Esegui comando",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "es. super+w, ctrl+alt+right, o una sequenza: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "Primo attivatore (on), es. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Passi separati da ; es. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right o middle", "shell command, e.g. notify-send hi": "comando shell, es. notify-send ciao",
+    "Direction": "Direzione", "Only for swipes": "Solo per gli scorrimenti", "System language": "Lingua di sistema",
+    "Shortcut: {value}": "Scorciatoia: {value}", "Toggle: {on}  ⇄  {off}": "Alterna: {on}  ⇄  {off}", "Cycle: {steps}": "Ciclo: {steps}",
+    "Click: {button}": "Clic: {button}", "Run: {command}": "Esegui: {command}",
+    "{kind} · {n} finger": "{kind} · {n} dito", "{kind} · {n} fingers": "{kind} · {n} dita",
+    "Gesture": "Gesto", "Cancel": "Annulla", "Save": "Salva", "Trigger": "Attivatore", "Type": "Tipo", "Fingers": "Dita",
+    "Action": "Azione", "Do": "Esegui", "Second trigger (off), e.g. ctrl+0": "Secondo attivatore (off), es. ctrl+0", "Scope": "Ambito",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Lascia vuoto per tutte le app. Altrimenti la regola scatta solo quando l'id della finestra in primo piano contiene questo testo (es. firefox). Richiede COSMIC, KDE, Sway o Hyprland.",
+    "Only in app": "Solo nell'app", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Scorrimento tra spazi di lavoro", "Continuous swipe that follows your fingers using the desktop's native animation.": "Scorrimento continuo che segue le dita con l'animazione nativa del desktop.",
+    "Enabled": "Attivo", "Fingers on the mouse": "Dita sul mouse",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Naturale: scorri a sinistra per passare allo spazio di lavoro successivo (stile macOS)",
+    "Sensitivity": "Sensibilità", "Higher = less finger travel per workspace": "Più alto = meno spostamento del dito per spazio di lavoro",
+    "Activation distance (mm)": "Distanza di attivazione (mm)", "Finger travel before a swipe starts": "Spostamento del dito prima che inizi lo scorrimento",
+    "Desktop gesture fingers": "Dita del gesto del desktop", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Dita che il desktop si aspetta per cambiare spazio di lavoro: 4 per COSMIC, 3 per GNOME",
+    "Axis": "Asse", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Direzione in cui il desktop dispone gli spazi di lavoro. Entrambi: blocca la prima direzione e lascia decidere al desktop (GNOME: verticale = panoramica)",
+    "Desktop touchpad natural scrolling": "Scorrimento naturale del touchpad del desktop", "Leave on Auto unless the swipe goes the wrong way": "Lascia su Auto a meno che lo scorrimento vada nel verso sbagliato",
+    "Pinch zoom": "Zoom con pizzico", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Due dita che si allontanano o si avvicinano diventano il gesto di pizzico nativo del desktop.",
+    "1.0 = same zoom as a touchpad": "1.0 = stesso zoom di un touchpad", "Change in finger distance before a pinch starts": "Variazione della distanza tra le dita prima che inizi il pizzico",
+    "Scrolling": "Scorrimento", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "Lo scorrimento a un dito spesso inizia con un breve salto nel verso sbagliato mentre il polpastrello si assesta sul guscio.",
+    "Filter the backwards jump": "Filtra il salto all'indietro", "Hold the first wheel events until the direction is clear": "Trattieni i primi eventi della rotella finché la direzione non è chiara",
+    "Movement before scrolling starts": "Movimento prima che inizi lo scorrimento", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "In unità rotella, 120 = uno scatto; alza se lo scorrimento inizia ancora all'indietro, abbassa se inizia tardi",
+    "Mode": "Modalità", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Scatti interi è la sensazione classica della rotella; fluido è più fine ma più veloce nei terminali",
+    "Speed": "Velocità", "Multiplier on scroll distance": "Moltiplicatore della distanza di scorrimento",
+    "Gestures": "Gesti", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Tocchi e scorrimenti rapidi che attivano un'azione una volta, facoltativamente solo in un'app.",
+    "Tap timing": "Tempi del tocco", "Tap max duration (ms)": "Durata max del tocco (ms)", "Tap max movement (mm)": "Movimento max del tocco (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "I polpastrelli rotolano 7-13 mm sulla superficie curva", "Tap max lift speed (mm/s)": "Velocità max di sollevamento (mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "Il dito deve essere quasi fermo quando si solleva; i colpetti sono più veloci", "Double tap window (ms)": "Finestra del doppio tocco (ms)",
+    "Advanced": "Avanzate", "Mute scrolling from N fingers": "Silenzia lo scorrimento da N dita",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Scarta l'emulazione della rotella del driver mentre toccano così tante dita (0 = mai)",
+    "Device name contains": "Il nome del dispositivo contiene",
+    "Appearance": "Aspetto", "Theme": "Tema", "System: follow the desktop's light/dark setting": "Sistema: segui l'impostazione chiaro/scuro del desktop",
+    "Language": "Lingua", "Follows your desktop language; pick one to override": "Segue la lingua del desktop; scegline una per sostituirla",
+    "Daemon": "Daemon", "Background service": "Servizio in background", "Restart": "Riavvia", "Config file": "File di configurazione",
+    "only in {app}": "solo in {app}", "No gestures yet": "Ancora nessun gesto", "Use + to add one": "Usa + per aggiungerne uno", "Service restarted": "Servizio riavviato",
+    "Natural": "Naturale", "Inverted": "Invertita", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Orizzontale", "Vertical": "Verticale", "Both": "Entrambi", "Auto-detect": "Rilevamento automatico", "On": "Attivo", "Off": "Disattivo",
+    "Whole notches": "Scatti interi", "Smooth steps": "Passi fluidi", "System": "Sistema", "Light": "Chiaro", "Dark": "Scuro",
+    "Could not save: {error}": "Impossibile salvare: {error}",
+}
+
+CATALOG["pt"] = {
+    "Swipe": "Deslizar", "Tap": "Toque", "Double tap": "Toque duplo",
+    "Left": "Esquerda", "Right": "Direita", "Up": "Cima", "Down": "Baixo",
+    "Keyboard shortcut": "Atalho de teclado", "Toggle two shortcuts": "Alternar dois atalhos", "Cycle through shortcuts": "Ciclar entre atalhos",
+    "Mouse button": "Botão do mouse", "Run command": "Executar comando",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "ex.: super+w, ctrl+alt+right, ou uma sequência: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "Primeiro disparo (on), ex.: ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Passos separados por ; ex.: ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right ou middle", "shell command, e.g. notify-send hi": "comando de shell, ex.: notify-send oi",
+    "Direction": "Direção", "Only for swipes": "Só para deslizes", "System language": "Idioma do sistema",
+    "Shortcut: {value}": "Atalho: {value}", "Toggle: {on}  ⇄  {off}": "Alternar: {on}  ⇄  {off}", "Cycle: {steps}": "Ciclo: {steps}",
+    "Click: {button}": "Clique: {button}", "Run: {command}": "Executar: {command}",
+    "{kind} · {n} finger": "{kind} · {n} dedo", "{kind} · {n} fingers": "{kind} · {n} dedos",
+    "Gesture": "Gesto", "Cancel": "Cancelar", "Save": "Salvar", "Trigger": "Gatilho", "Type": "Tipo", "Fingers": "Dedos",
+    "Action": "Ação", "Do": "Fazer", "Second trigger (off), e.g. ctrl+0": "Segundo disparo (off), ex.: ctrl+0", "Scope": "Escopo",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Deixe vazio para todos os apps. Caso contrário, a regra só dispara quando o id da janela em foco contém este texto (ex.: firefox). Precisa de COSMIC, KDE, Sway ou Hyprland.",
+    "Only in app": "Só no app", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Deslize entre áreas de trabalho", "Continuous swipe that follows your fingers using the desktop's native animation.": "Deslize contínuo que segue seus dedos usando a animação nativa do desktop.",
+    "Enabled": "Ativado", "Fingers on the mouse": "Dedos no mouse",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Natural: deslize para a esquerda para ir à próxima área de trabalho (estilo macOS)",
+    "Sensitivity": "Sensibilidade", "Higher = less finger travel per workspace": "Maior = menos percurso do dedo por área de trabalho",
+    "Activation distance (mm)": "Distância de ativação (mm)", "Finger travel before a swipe starts": "Percurso do dedo antes de o deslize começar",
+    "Desktop gesture fingers": "Dedos do gesto do desktop", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Dedos que o desktop espera para trocar de área de trabalho: 4 no COSMIC, 3 no GNOME",
+    "Axis": "Eixo", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Direção em que o desktop organiza as áreas de trabalho. Ambos: trava na primeira direção e deixa o desktop decidir (GNOME: vertical = visão geral)",
+    "Desktop touchpad natural scrolling": "Rolagem natural do touchpad do desktop", "Leave on Auto unless the swipe goes the wrong way": "Deixe em Auto, a menos que o deslize vá para o lado errado",
+    "Pinch zoom": "Zoom com pinça", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Dois dedos se afastando ou se juntando viram o gesto de pinça nativo do desktop.",
+    "1.0 = same zoom as a touchpad": "1.0 = mesmo zoom de um touchpad", "Change in finger distance before a pinch starts": "Variação da distância entre os dedos antes de a pinça começar",
+    "Scrolling": "Rolagem", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "A rolagem com um dedo costuma começar com um pequeno pulo para o lado errado enquanto a ponta do dedo assenta na carcaça.",
+    "Filter the backwards jump": "Filtrar o pulo para trás", "Hold the first wheel events until the direction is clear": "Segurar os primeiros eventos da roda até a direção ficar clara",
+    "Movement before scrolling starts": "Movimento antes de a rolagem começar", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "Em unidades de roda, 120 = um clique; aumente se a rolagem ainda começar para trás, diminua se começar tarde",
+    "Mode": "Modo", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Cliques inteiros é a sensação clássica da roda; suave é mais fino, mas mais rápido em terminais",
+    "Speed": "Velocidade", "Multiplier on scroll distance": "Multiplicador da distância de rolagem",
+    "Gestures": "Gestos", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Toques e deslizes rápidos que disparam uma ação uma vez, opcionalmente só em um app.",
+    "Tap timing": "Tempos do toque", "Tap max duration (ms)": "Duração máx. do toque (ms)", "Tap max movement (mm)": "Movimento máx. do toque (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "As pontas dos dedos rolam 7-13 mm na superfície curva", "Tap max lift speed (mm/s)": "Velocidade máx. ao levantar (mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "O dedo deve estar quase parado ao levantar; movimentos rápidos são mais velozes", "Double tap window (ms)": "Janela do toque duplo (ms)",
+    "Advanced": "Avançado", "Mute scrolling from N fingers": "Silenciar a rolagem a partir de N dedos",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Descartar a emulação de roda do driver enquanto esses dedos tocam (0 = nunca)",
+    "Device name contains": "O nome do dispositivo contém",
+    "Appearance": "Aparência", "Theme": "Tema", "System: follow the desktop's light/dark setting": "Sistema: seguir a configuração claro/escuro do desktop",
+    "Language": "Idioma", "Follows your desktop language; pick one to override": "Segue o idioma do desktop; escolha um para substituir",
+    "Daemon": "Daemon", "Background service": "Serviço em segundo plano", "Restart": "Reiniciar", "Config file": "Arquivo de configuração",
+    "only in {app}": "só em {app}", "No gestures yet": "Nenhum gesto ainda", "Use + to add one": "Use + para adicionar um", "Service restarted": "Serviço reiniciado",
+    "Natural": "Natural", "Inverted": "Invertida", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Horizontal", "Vertical": "Vertical", "Both": "Ambos", "Auto-detect": "Detectar automaticamente", "On": "Ligado", "Off": "Desligado",
+    "Whole notches": "Cliques inteiros", "Smooth steps": "Passos suaves", "System": "Sistema", "Light": "Claro", "Dark": "Escuro",
+    "Could not save: {error}": "Não foi possível salvar: {error}",
+}
+
+CATALOG["nl"] = {
+    "Swipe": "Vegen", "Tap": "Tik", "Double tap": "Dubbele tik",
+    "Left": "Links", "Right": "Rechts", "Up": "Omhoog", "Down": "Omlaag",
+    "Keyboard shortcut": "Sneltoets", "Toggle two shortcuts": "Tussen twee sneltoetsen schakelen", "Cycle through shortcuts": "Door sneltoetsen heen lopen",
+    "Mouse button": "Muisknop", "Run command": "Opdracht uitvoeren",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "bijv. super+w, ctrl+alt+right, of een reeks: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "Eerste trigger (on), bijv. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Stappen gescheiden door ; bijv. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right of middle", "shell command, e.g. notify-send hi": "shell-opdracht, bijv. notify-send hoi",
+    "Direction": "Richting", "Only for swipes": "Alleen voor veeggebaren", "System language": "Systeemtaal",
+    "Shortcut: {value}": "Sneltoets: {value}", "Toggle: {on}  ⇄  {off}": "Schakelen: {on}  ⇄  {off}", "Cycle: {steps}": "Cyclus: {steps}",
+    "Click: {button}": "Klik: {button}", "Run: {command}": "Uitvoeren: {command}",
+    "{kind} · {n} finger": "{kind} · {n} vinger", "{kind} · {n} fingers": "{kind} · {n} vingers",
+    "Gesture": "Gebaar", "Cancel": "Annuleren", "Save": "Opslaan", "Trigger": "Trigger", "Type": "Type", "Fingers": "Vingers",
+    "Action": "Actie", "Do": "Doen", "Second trigger (off), e.g. ctrl+0": "Tweede trigger (off), bijv. ctrl+0", "Scope": "Bereik",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Laat leeg voor elke app. Anders gaat de regel alleen af als de app-id van het actieve venster deze tekst bevat (bijv. firefox). Vereist COSMIC, KDE, Sway of Hyprland.",
+    "Only in app": "Alleen in app", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Werkbladveeg", "Continuous swipe that follows your fingers using the desktop's native animation.": "Doorlopende veeg die je vingers volgt met de eigen animatie van de desktop.",
+    "Enabled": "Ingeschakeld", "Fingers on the mouse": "Vingers op de muis",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Natuurlijk: veeg naar links voor het volgende werkblad (macOS-stijl)",
+    "Sensitivity": "Gevoeligheid", "Higher = less finger travel per workspace": "Hoger = minder vingerbeweging per werkblad",
+    "Activation distance (mm)": "Activeringsafstand (mm)", "Finger travel before a swipe starts": "Vingerbeweging voordat een veeg begint",
+    "Desktop gesture fingers": "Vingers voor het desktopgebaar", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Vingers die de desktop verwacht voor een werkbladveeg: 4 voor COSMIC, 3 voor GNOME",
+    "Axis": "As", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Richting waarin je desktop werkbladen rangschikt. Beide: vergrendel op de eerste richting en laat de desktop beslissen (GNOME: verticaal = overzicht)",
+    "Desktop touchpad natural scrolling": "Natuurlijk scrollen van het desktop-touchpad", "Leave on Auto unless the swipe goes the wrong way": "Laat op Auto staan tenzij de veeg de verkeerde kant op gaat",
+    "Pinch zoom": "Knijpzoom", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Twee vingers die uit elkaar of naar elkaar bewegen worden het eigen knijpgebaar van de desktop.",
+    "1.0 = same zoom as a touchpad": "1.0 = dezelfde zoom als een touchpad", "Change in finger distance before a pinch starts": "Verandering in vingerafstand voordat een knijpgebaar begint",
+    "Scrolling": "Scrollen", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "Scrollen met één vinger begint vaak met een kort sprongetje de verkeerde kant op terwijl de vingertop op de schaal landt.",
+    "Filter the backwards jump": "Sprong terug filteren", "Hold the first wheel events until the direction is clear": "De eerste wielgebeurtenissen vasthouden tot de richting duidelijk is",
+    "Movement before scrolling starts": "Beweging voordat scrollen begint", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "In wieleenheden, 120 = één klik; verhoog als scrollen nog achteruit begint, verlaag als het laat begint",
+    "Mode": "Modus", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Hele klikken is het klassieke wielgevoel; vloeiend is fijner maar sneller in terminals",
+    "Speed": "Snelheid", "Multiplier on scroll distance": "Vermenigvuldiger voor de scrolafstand",
+    "Gestures": "Gebaren", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Tikken en snelle vegen die één keer een actie uitvoeren, optioneel alleen in één app.",
+    "Tap timing": "Tiktiming", "Tap max duration (ms)": "Max. tikduur (ms)", "Tap max movement (mm)": "Max. tikbeweging (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "Vingertoppen rollen 7-13 mm over het gebogen oppervlak", "Tap max lift speed (mm/s)": "Max. optilsnelheid (mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "De vinger moet bijna stil zijn bij het optillen; snelle bewegingen zijn sneller", "Double tap window (ms)": "Venster voor dubbele tik (ms)",
+    "Advanced": "Geavanceerd", "Mute scrolling from N fingers": "Scrollen dempen vanaf N vingers",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "De scrollwiel-emulatie van de driver negeren zolang zoveel vingers het oppervlak raken (0 = nooit)",
+    "Device name contains": "Apparaatnaam bevat",
+    "Appearance": "Uiterlijk", "Theme": "Thema", "System: follow the desktop's light/dark setting": "Systeem: de licht/donker-instelling van de desktop volgen",
+    "Language": "Taal", "Follows your desktop language; pick one to override": "Volgt de desktoptaal; kies er een om te overschrijven",
+    "Daemon": "Daemon", "Background service": "Achtergrondservice", "Restart": "Herstarten", "Config file": "Configuratiebestand",
+    "only in {app}": "alleen in {app}", "No gestures yet": "Nog geen gebaren", "Use + to add one": "Gebruik + om er een toe te voegen", "Service restarted": "Service herstart",
+    "Natural": "Natuurlijk", "Inverted": "Omgekeerd", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Horizontaal", "Vertical": "Verticaal", "Both": "Beide", "Auto-detect": "Automatisch detecteren", "On": "Aan", "Off": "Uit",
+    "Whole notches": "Hele klikken", "Smooth steps": "Vloeiende stappen", "System": "Systeem", "Light": "Licht", "Dark": "Donker",
+    "Could not save: {error}": "Kon niet opslaan: {error}",
+}
+
+CATALOG["sv"] = {
+    "Swipe": "Svep", "Tap": "Tryck", "Double tap": "Dubbeltryck",
+    "Left": "Vänster", "Right": "Höger", "Up": "Upp", "Down": "Ner",
+    "Keyboard shortcut": "Kortkommando", "Toggle two shortcuts": "Växla mellan två kortkommandon", "Cycle through shortcuts": "Stega genom kortkommandon",
+    "Mouse button": "Musknapp", "Run command": "Kör kommando",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "t.ex. super+w, ctrl+alt+right, eller en sekvens: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "Första utlösaren (on), t.ex. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Steg separerade med ; t.ex. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right eller middle", "shell command, e.g. notify-send hi": "skalkommando, t.ex. notify-send hej",
+    "Direction": "Riktning", "Only for swipes": "Endast för svep", "System language": "Systemspråk",
+    "Shortcut: {value}": "Kortkommando: {value}", "Toggle: {on}  ⇄  {off}": "Växla: {on}  ⇄  {off}", "Cycle: {steps}": "Cykel: {steps}",
+    "Click: {button}": "Klick: {button}", "Run: {command}": "Kör: {command}",
+    "{kind} · {n} finger": "{kind} · {n} finger", "{kind} · {n} fingers": "{kind} · {n} fingrar",
+    "Gesture": "Gest", "Cancel": "Avbryt", "Save": "Spara", "Trigger": "Utlösare", "Type": "Typ", "Fingers": "Fingrar",
+    "Action": "Åtgärd", "Do": "Gör", "Second trigger (off), e.g. ctrl+0": "Andra utlösaren (off), t.ex. ctrl+0", "Scope": "Omfattning",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Lämna tomt för alla appar. Annars utlöses regeln bara när det fokuserade fönstrets app-id innehåller denna text (t.ex. firefox). Kräver COSMIC, KDE, Sway eller Hyprland.",
+    "Only in app": "Endast i app", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Svep mellan arbetsytor", "Continuous swipe that follows your fingers using the desktop's native animation.": "Kontinuerligt svep som följer fingrarna med skrivbordets egen animation.",
+    "Enabled": "Aktiverad", "Fingers on the mouse": "Fingrar på musen",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Naturlig: svep vänster för nästa arbetsyta (som macOS)",
+    "Sensitivity": "Känslighet", "Higher = less finger travel per workspace": "Högre = kortare fingerrörelse per arbetsyta",
+    "Activation distance (mm)": "Aktiveringsavstånd (mm)", "Finger travel before a swipe starts": "Fingerrörelse innan ett svep börjar",
+    "Desktop gesture fingers": "Fingrar för skrivbordsgesten", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Fingrar som skrivbordet förväntar sig för ett arbetsytesvep: 4 för COSMIC, 3 för GNOME",
+    "Axis": "Axel", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Riktningen som skrivbordet ordnar arbetsytor i. Båda: lås till den första riktningen och låt skrivbordet avgöra (GNOME: vertikal = översikt)",
+    "Desktop touchpad natural scrolling": "Naturlig rullning för skrivbordets pekplatta", "Leave on Auto unless the swipe goes the wrong way": "Lämna på Auto om inte svepet går åt fel håll",
+    "Pinch zoom": "Nypzoom", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Två fingrar som förs isär eller ihop blir skrivbordets egen nypgest.",
+    "1.0 = same zoom as a touchpad": "1.0 = samma zoom som en pekplatta", "Change in finger distance before a pinch starts": "Ändring av fingeravstånd innan ett nyp börjar",
+    "Scrolling": "Rullning", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "Rullning med ett finger börjar ofta med ett kort hopp åt fel håll medan fingertoppen landar på skalet.",
+    "Filter the backwards jump": "Filtrera hoppet bakåt", "Hold the first wheel events until the direction is clear": "Håll de första hjulhändelserna tills riktningen är tydlig",
+    "Movement before scrolling starts": "Rörelse innan rullningen börjar", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "I hjulenheter, 120 = ett hack; höj om rullningen fortfarande börjar bakåt, sänk om den börjar sent",
+    "Mode": "Läge", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Hela hack är den klassiska hjulkänslan; mjuk är finare men snabbare i terminaler",
+    "Speed": "Hastighet", "Multiplier on scroll distance": "Multiplikator för rullningsavstånd",
+    "Gestures": "Gester", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Tryck och snabba svep som utlöser en åtgärd en gång, valfritt bara i en app.",
+    "Tap timing": "Trycktider", "Tap max duration (ms)": "Max trycktid (ms)", "Tap max movement (mm)": "Max tryckrörelse (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "Fingertoppar rullar 7–13 mm på den böjda ytan", "Tap max lift speed (mm/s)": "Max lyfthastighet (mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "Fingret måste vara nästan stilla när det lyfts; snärtar är snabbare", "Double tap window (ms)": "Fönster för dubbeltryck (ms)",
+    "Advanced": "Avancerat", "Mute scrolling from N fingers": "Tysta rullning från N fingrar",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Släng drivrutinens rullhjulsemulering medan så många fingrar rör ytan (0 = aldrig)",
+    "Device name contains": "Enhetsnamnet innehåller",
+    "Appearance": "Utseende", "Theme": "Tema", "System: follow the desktop's light/dark setting": "System: följ skrivbordets ljus/mörk-inställning",
+    "Language": "Språk", "Follows your desktop language; pick one to override": "Följer skrivbordets språk; välj ett för att åsidosätta",
+    "Daemon": "Demon", "Background service": "Bakgrundstjänst", "Restart": "Starta om", "Config file": "Konfigurationsfil",
+    "only in {app}": "endast i {app}", "No gestures yet": "Inga gester ännu", "Use + to add one": "Använd + för att lägga till en", "Service restarted": "Tjänsten omstartad",
+    "Natural": "Naturlig", "Inverted": "Omvänd", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Horisontell", "Vertical": "Vertikal", "Both": "Båda", "Auto-detect": "Identifiera automatiskt", "On": "På", "Off": "Av",
+    "Whole notches": "Hela hack", "Smooth steps": "Mjuka steg", "System": "System", "Light": "Ljust", "Dark": "Mörkt",
+    "Could not save: {error}": "Kunde inte spara: {error}",
+}
+
+CATALOG["pl"] = {
+    "Swipe": "Przesunięcie", "Tap": "Stuknięcie", "Double tap": "Podwójne stuknięcie",
+    "Left": "W lewo", "Right": "W prawo", "Up": "W górę", "Down": "W dół",
+    "Keyboard shortcut": "Skrót klawiszowy", "Toggle two shortcuts": "Przełączaj dwa skróty", "Cycle through shortcuts": "Przechodź przez skróty",
+    "Mouse button": "Przycisk myszy", "Run command": "Uruchom polecenie",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "np. super+w, ctrl+alt+right lub sekwencja: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "Pierwszy wyzwalacz (on), np. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Kroki rozdzielone ; np. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right lub middle", "shell command, e.g. notify-send hi": "polecenie powłoki, np. notify-send cześć",
+    "Direction": "Kierunek", "Only for swipes": "Tylko dla przesunięć", "System language": "Język systemu",
+    "Shortcut: {value}": "Skrót: {value}", "Toggle: {on}  ⇄  {off}": "Przełącznik: {on}  ⇄  {off}", "Cycle: {steps}": "Cykl: {steps}",
+    "Click: {button}": "Kliknięcie: {button}", "Run: {command}": "Uruchom: {command}",
+    "{kind} · {n} finger": "{kind} · {n} palec", "{kind} · {n} fingers": "{kind} · {n} palce(-ów)",
+    "Gesture": "Gest", "Cancel": "Anuluj", "Save": "Zapisz", "Trigger": "Wyzwalacz", "Type": "Typ", "Fingers": "Palce",
+    "Action": "Akcja", "Do": "Wykonaj", "Second trigger (off), e.g. ctrl+0": "Drugi wyzwalacz (off), np. ctrl+0", "Scope": "Zakres",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Zostaw puste dla wszystkich aplikacji. W przeciwnym razie reguła działa tylko, gdy id aktywnego okna zawiera ten tekst (np. firefox). Wymaga COSMIC, KDE, Sway lub Hyprland.",
+    "Only in app": "Tylko w aplikacji", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Przesuwanie obszarów roboczych", "Continuous swipe that follows your fingers using the desktop's native animation.": "Ciągłe przesunięcie podążające za palcami z natywną animacją pulpitu.",
+    "Enabled": "Włączone", "Fingers on the mouse": "Palce na myszy",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Naturalny: przesuń w lewo, aby przejść do następnego obszaru (jak w macOS)",
+    "Sensitivity": "Czułość", "Higher = less finger travel per workspace": "Wyżej = krótsza droga palca na obszar roboczy",
+    "Activation distance (mm)": "Dystans aktywacji (mm)", "Finger travel before a swipe starts": "Droga palca przed rozpoczęciem przesunięcia",
+    "Desktop gesture fingers": "Palce gestu pulpitu", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Liczba palców, jakiej pulpit oczekuje przy zmianie obszaru: 4 dla COSMIC, 3 dla GNOME",
+    "Axis": "Oś", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Kierunek, w jakim pulpit układa obszary robocze. Obie: zablokuj pierwszy kierunek i pozwól zdecydować pulpitowi (GNOME: pionowo = podgląd)",
+    "Desktop touchpad natural scrolling": "Naturalne przewijanie touchpada pulpitu", "Leave on Auto unless the swipe goes the wrong way": "Zostaw Auto, chyba że przesunięcie idzie w złą stronę",
+    "Pinch zoom": "Zoom szczypaniem", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Dwa palce rozsuwane lub zsuwane stają się natywnym gestem szczypania pulpitu.",
+    "1.0 = same zoom as a touchpad": "1.0 = taki sam zoom jak touchpad", "Change in finger distance before a pinch starts": "Zmiana odległości palców przed rozpoczęciem szczypania",
+    "Scrolling": "Przewijanie", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "Przewijanie jednym palcem często zaczyna się krótkim skokiem w złą stronę, gdy opuszek osiada na obudowie.",
+    "Filter the backwards jump": "Filtruj skok do tyłu", "Hold the first wheel events until the direction is clear": "Wstrzymaj pierwsze zdarzenia kółka, aż kierunek będzie jasny",
+    "Movement before scrolling starts": "Ruch przed rozpoczęciem przewijania", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "W jednostkach kółka, 120 = jeden skok; zwiększ, jeśli przewijanie wciąż zaczyna się do tyłu, zmniejsz, jeśli zaczyna się późno",
+    "Mode": "Tryb", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Pełne skoki to klasyczne odczucie kółka; płynne jest dokładniejsze, ale szybsze w terminalach",
+    "Speed": "Prędkość", "Multiplier on scroll distance": "Mnożnik dystansu przewijania",
+    "Gestures": "Gesty", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Stuknięcia i szybkie przesunięcia wyzwalające akcję jednorazowo, opcjonalnie tylko w jednej aplikacji.",
+    "Tap timing": "Czasy stuknięć", "Tap max duration (ms)": "Maks. czas stuknięcia (ms)", "Tap max movement (mm)": "Maks. ruch stuknięcia (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "Opuszki toczą się 7-13 mm po zakrzywionej powierzchni", "Tap max lift speed (mm/s)": "Maks. prędkość uniesienia (mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "Palec musi być prawie nieruchomy przy unoszeniu; machnięcia są szybsze", "Double tap window (ms)": "Okno podwójnego stuknięcia (ms)",
+    "Advanced": "Zaawansowane", "Mute scrolling from N fingers": "Wycisz przewijanie od N palców",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Odrzucaj emulację kółka sterownika, gdy dotyka tyle palców (0 = nigdy)",
+    "Device name contains": "Nazwa urządzenia zawiera",
+    "Appearance": "Wygląd", "Theme": "Motyw", "System: follow the desktop's light/dark setting": "System: podążaj za ustawieniem jasny/ciemny pulpitu",
+    "Language": "Język", "Follows your desktop language; pick one to override": "Podąża za językiem pulpitu; wybierz inny, aby nadpisać",
+    "Daemon": "Demon", "Background service": "Usługa w tle", "Restart": "Uruchom ponownie", "Config file": "Plik konfiguracyjny",
+    "only in {app}": "tylko w {app}", "No gestures yet": "Brak gestów", "Use + to add one": "Użyj +, aby dodać", "Service restarted": "Usługa uruchomiona ponownie",
+    "Natural": "Naturalny", "Inverted": "Odwrócony", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Pozioma", "Vertical": "Pionowa", "Both": "Obie", "Auto-detect": "Wykryj automatycznie", "On": "Wł.", "Off": "Wył.",
+    "Whole notches": "Pełne skoki", "Smooth steps": "Płynne kroki", "System": "System", "Light": "Jasny", "Dark": "Ciemny",
+    "Could not save: {error}": "Nie można zapisać: {error}",
+}
+
+CATALOG["cs"] = {
+    "Swipe": "Přejetí", "Tap": "Klepnutí", "Double tap": "Dvojité klepnutí",
+    "Left": "Vlevo", "Right": "Vpravo", "Up": "Nahoru", "Down": "Dolů",
+    "Keyboard shortcut": "Klávesová zkratka", "Toggle two shortcuts": "Přepínat dvě zkratky", "Cycle through shortcuts": "Procházet zkratky",
+    "Mouse button": "Tlačítko myši", "Run command": "Spustit příkaz",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "např. super+w, ctrl+alt+right nebo sekvence: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "První spouštěč (on), např. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Kroky oddělené ; např. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right nebo middle", "shell command, e.g. notify-send hi": "příkaz shellu, např. notify-send ahoj",
+    "Direction": "Směr", "Only for swipes": "Jen pro přejetí", "System language": "Jazyk systému",
+    "Shortcut: {value}": "Zkratka: {value}", "Toggle: {on}  ⇄  {off}": "Přepínač: {on}  ⇄  {off}", "Cycle: {steps}": "Cyklus: {steps}",
+    "Click: {button}": "Kliknutí: {button}", "Run: {command}": "Spustit: {command}",
+    "{kind} · {n} finger": "{kind} · {n} prst", "{kind} · {n} fingers": "{kind} · {n} prsty/prstů",
+    "Gesture": "Gesto", "Cancel": "Zrušit", "Save": "Uložit", "Trigger": "Spouštěč", "Type": "Typ", "Fingers": "Prsty",
+    "Action": "Akce", "Do": "Provést", "Second trigger (off), e.g. ctrl+0": "Druhý spouštěč (off), např. ctrl+0", "Scope": "Rozsah",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Nechte prázdné pro všechny aplikace. Jinak se pravidlo spustí jen tehdy, když id aktivního okna obsahuje tento text (např. firefox). Vyžaduje COSMIC, KDE, Sway nebo Hyprland.",
+    "Only in app": "Jen v aplikaci", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Přejíždění mezi plochami", "Continuous swipe that follows your fingers using the desktop's native animation.": "Plynulé přejetí, které sleduje prsty s nativní animací prostředí.",
+    "Enabled": "Zapnuto", "Fingers on the mouse": "Prsty na myši",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Přirozený: přejetím vlevo na další plochu (jako macOS)",
+    "Sensitivity": "Citlivost", "Higher = less finger travel per workspace": "Vyšší = kratší dráha prstu na plochu",
+    "Activation distance (mm)": "Aktivační vzdálenost (mm)", "Finger travel before a swipe starts": "Dráha prstu, než přejetí začne",
+    "Desktop gesture fingers": "Prsty gesta prostředí", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Počet prstů, který prostředí očekává pro přepnutí plochy: 4 u COSMIC, 3 u GNOME",
+    "Axis": "Osa", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Směr, ve kterém prostředí řadí plochy. Obě: zamknout první směr a nechat rozhodnout prostředí (GNOME: svisle = přehled)",
+    "Desktop touchpad natural scrolling": "Přirozené posouvání touchpadu v prostředí", "Leave on Auto unless the swipe goes the wrong way": "Nechte Auto, pokud přejetí nejde opačným směrem",
+    "Pinch zoom": "Zoom štípnutím", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Dva prsty rozevírané nebo svírané se stanou nativním gestem štípnutí prostředí.",
+    "1.0 = same zoom as a touchpad": "1.0 = stejný zoom jako touchpad", "Change in finger distance before a pinch starts": "Změna vzdálenosti prstů, než štípnutí začne",
+    "Scrolling": "Posouvání", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "Posouvání jedním prstem často začíná krátkým skokem opačným směrem, zatímco se bříško prstu usazuje na krytu.",
+    "Filter the backwards jump": "Filtrovat skok zpět", "Hold the first wheel events until the direction is clear": "Podržet první události kolečka, dokud není směr jasný",
+    "Movement before scrolling starts": "Pohyb, než posouvání začne", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "V jednotkách kolečka, 120 = jeden krok; zvyšte, pokud posouvání stále začíná zpět, snižte, pokud začíná pozdě",
+    "Mode": "Režim", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Celé kroky jsou klasický pocit kolečka; plynulé je jemnější, ale v terminálech rychlejší",
+    "Speed": "Rychlost", "Multiplier on scroll distance": "Násobitel vzdálenosti posouvání",
+    "Gestures": "Gesta", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Klepnutí a rychlá přejetí, která jednou spustí akci, volitelně jen v jedné aplikaci.",
+    "Tap timing": "Časování klepnutí", "Tap max duration (ms)": "Max. délka klepnutí (ms)", "Tap max movement (mm)": "Max. pohyb při klepnutí (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "Bříška prstů se po zakřiveném povrchu odvalí 7–13 mm", "Tap max lift speed (mm/s)": "Max. rychlost zvednutí (mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "Prst musí být při zvednutí téměř v klidu; švihnutí jsou rychlejší", "Double tap window (ms)": "Okno dvojitého klepnutí (ms)",
+    "Advanced": "Pokročilé", "Mute scrolling from N fingers": "Ztlumit posouvání od N prstů",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Zahodit emulaci kolečka ovladače, dokud se dotýká tolik prstů (0 = nikdy)",
+    "Device name contains": "Název zařízení obsahuje",
+    "Appearance": "Vzhled", "Theme": "Motiv", "System: follow the desktop's light/dark setting": "Systém: řídit se nastavením světlý/tmavý prostředí",
+    "Language": "Jazyk", "Follows your desktop language; pick one to override": "Řídí se jazykem prostředí; vyberte jiný pro přepsání",
+    "Daemon": "Démon", "Background service": "Služba na pozadí", "Restart": "Restartovat", "Config file": "Konfigurační soubor",
+    "only in {app}": "jen v {app}", "No gestures yet": "Zatím žádná gesta", "Use + to add one": "Pomocí + přidejte nové", "Service restarted": "Služba restartována",
+    "Natural": "Přirozený", "Inverted": "Obrácený", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Vodorovná", "Vertical": "Svislá", "Both": "Obě", "Auto-detect": "Zjistit automaticky", "On": "Zap.", "Off": "Vyp.",
+    "Whole notches": "Celé kroky", "Smooth steps": "Plynulé kroky", "System": "Systém", "Light": "Světlý", "Dark": "Tmavý",
+    "Could not save: {error}": "Nelze uložit: {error}",
+}
+
+CATALOG["ro"] = {
+    "Swipe": "Glisare", "Tap": "Atingere", "Double tap": "Atingere dublă",
+    "Left": "Stânga", "Right": "Dreapta", "Up": "Sus", "Down": "Jos",
+    "Keyboard shortcut": "Scurtătură de tastatură", "Toggle two shortcuts": "Comută între două scurtături", "Cycle through shortcuts": "Parcurge scurtăturile",
+    "Mouse button": "Buton de mouse", "Run command": "Rulează o comandă",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "ex. super+w, ctrl+alt+right, sau o secvență: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "Primul declanșator (on), ex. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Pași separați prin ; ex. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right sau middle", "shell command, e.g. notify-send hi": "comandă shell, ex. notify-send salut",
+    "Direction": "Direcție", "Only for swipes": "Doar pentru glisări", "System language": "Limba sistemului",
+    "Shortcut: {value}": "Scurtătură: {value}", "Toggle: {on}  ⇄  {off}": "Comutare: {on}  ⇄  {off}", "Cycle: {steps}": "Ciclu: {steps}",
+    "Click: {button}": "Clic: {button}", "Run: {command}": "Rulează: {command}",
+    "{kind} · {n} finger": "{kind} · {n} deget", "{kind} · {n} fingers": "{kind} · {n} degete",
+    "Gesture": "Gest", "Cancel": "Anulează", "Save": "Salvează", "Trigger": "Declanșator", "Type": "Tip", "Fingers": "Degete",
+    "Action": "Acțiune", "Do": "Fă", "Second trigger (off), e.g. ctrl+0": "Al doilea declanșator (off), ex. ctrl+0", "Scope": "Domeniu",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Lasă gol pentru toate aplicațiile. Altfel regula se declanșează doar când id-ul ferestrei active conține acest text (ex. firefox). Necesită COSMIC, KDE, Sway sau Hyprland.",
+    "Only in app": "Doar în aplicația", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Glisare între spații de lucru", "Continuous swipe that follows your fingers using the desktop's native animation.": "Glisare continuă care urmărește degetele cu animația nativă a desktopului.",
+    "Enabled": "Activat", "Fingers on the mouse": "Degete pe mouse",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Natural: glisează la stânga pentru spațiul următor (stil macOS)",
+    "Sensitivity": "Sensibilitate", "Higher = less finger travel per workspace": "Mai mare = mai puțină deplasare a degetului per spațiu de lucru",
+    "Activation distance (mm)": "Distanță de activare (mm)", "Finger travel before a swipe starts": "Deplasarea degetului înainte ca glisarea să înceapă",
+    "Desktop gesture fingers": "Degete pentru gestul desktopului", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Degetele pe care desktopul le așteaptă pentru o glisare între spații: 4 pentru COSMIC, 3 pentru GNOME",
+    "Axis": "Axă", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Direcția în care desktopul aranjează spațiile de lucru. Ambele: blochează prima direcție și lasă desktopul să decidă (GNOME: vertical = prezentare generală)",
+    "Desktop touchpad natural scrolling": "Derulare naturală a touchpadului desktopului", "Leave on Auto unless the swipe goes the wrong way": "Lasă pe Auto dacă glisarea nu merge în direcția greșită",
+    "Pinch zoom": "Zoom prin ciupire", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Două degete care se depărtează sau se apropie devin gestul nativ de ciupire al desktopului.",
+    "1.0 = same zoom as a touchpad": "1.0 = același zoom ca un touchpad", "Change in finger distance before a pinch starts": "Schimbarea distanței dintre degete înainte ca ciupirea să înceapă",
+    "Scrolling": "Derulare", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "Derularea cu un deget începe adesea cu un mic salt în direcția greșită cât timp vârful degetului se așază pe carcasă.",
+    "Filter the backwards jump": "Filtrează saltul înapoi", "Hold the first wheel events until the direction is clear": "Reține primele evenimente de rotiță până când direcția este clară",
+    "Movement before scrolling starts": "Mișcare înainte ca derularea să înceapă", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "În unități de rotiță, 120 = o treaptă; mărește dacă derularea încă începe înapoi, micșorează dacă începe târziu",
+    "Mode": "Mod", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Trepte întregi este senzația clasică de rotiță; fluid este mai fin, dar mai rapid în terminale",
+    "Speed": "Viteză", "Multiplier on scroll distance": "Multiplicator al distanței de derulare",
+    "Gestures": "Gesturi", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Atingeri și glisări rapide care declanșează o acțiune o dată, opțional doar într-o aplicație.",
+    "Tap timing": "Temporizarea atingerilor", "Tap max duration (ms)": "Durată maximă a atingerii (ms)", "Tap max movement (mm)": "Mișcare maximă a atingerii (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "Vârfurile degetelor se rostogolesc 7-13 mm pe suprafața curbată", "Tap max lift speed (mm/s)": "Viteză maximă de ridicare (mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "Degetul trebuie să fie aproape nemișcat la ridicare; loviturile rapide sunt mai iuți", "Double tap window (ms)": "Fereastra atingerii duble (ms)",
+    "Advanced": "Avansat", "Mute scrolling from N fingers": "Dezactivează derularea de la N degete",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Ignoră emularea rotiței din driver cât timp ating atâtea degete (0 = niciodată)",
+    "Device name contains": "Numele dispozitivului conține",
+    "Appearance": "Aspect", "Theme": "Temă", "System: follow the desktop's light/dark setting": "Sistem: urmează setarea luminos/întunecat a desktopului",
+    "Language": "Limbă", "Follows your desktop language; pick one to override": "Urmează limba desktopului; alege una pentru a o înlocui",
+    "Daemon": "Daemon", "Background service": "Serviciu în fundal", "Restart": "Repornește", "Config file": "Fișier de configurare",
+    "only in {app}": "doar în {app}", "No gestures yet": "Niciun gest încă", "Use + to add one": "Folosește + pentru a adăuga unul", "Service restarted": "Serviciu repornit",
+    "Natural": "Natural", "Inverted": "Inversat", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Orizontal", "Vertical": "Vertical", "Both": "Ambele", "Auto-detect": "Detectare automată", "On": "Pornit", "Off": "Oprit",
+    "Whole notches": "Trepte întregi", "Smooth steps": "Pași fluizi", "System": "Sistem", "Light": "Luminos", "Dark": "Întunecat",
+    "Could not save: {error}": "Nu s-a putut salva: {error}",
+}
+
+CATALOG["el"] = {
+    "Swipe": "Σάρωση", "Tap": "Πάτημα", "Double tap": "Διπλό πάτημα",
+    "Left": "Αριστερά", "Right": "Δεξιά", "Up": "Πάνω", "Down": "Κάτω",
+    "Keyboard shortcut": "Συντόμευση πληκτρολογίου", "Toggle two shortcuts": "Εναλλαγή δύο συντομεύσεων", "Cycle through shortcuts": "Κυκλική εναλλαγή συντομεύσεων",
+    "Mouse button": "Κουμπί ποντικιού", "Run command": "Εκτέλεση εντολής",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "π.χ. super+w, ctrl+alt+right, ή ακολουθία: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "Πρώτη ενεργοποίηση (on), π.χ. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Βήματα χωρισμένα με ; π.χ. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right ή middle", "shell command, e.g. notify-send hi": "εντολή κελύφους, π.χ. notify-send γεια",
+    "Direction": "Κατεύθυνση", "Only for swipes": "Μόνο για σαρώσεις", "System language": "Γλώσσα συστήματος",
+    "Shortcut: {value}": "Συντόμευση: {value}", "Toggle: {on}  ⇄  {off}": "Εναλλαγή: {on}  ⇄  {off}", "Cycle: {steps}": "Κύκλος: {steps}",
+    "Click: {button}": "Κλικ: {button}", "Run: {command}": "Εκτέλεση: {command}",
+    "{kind} · {n} finger": "{kind} · {n} δάχτυλο", "{kind} · {n} fingers": "{kind} · {n} δάχτυλα",
+    "Gesture": "Χειρονομία", "Cancel": "Ακύρωση", "Save": "Αποθήκευση", "Trigger": "Ενεργοποίηση", "Type": "Τύπος", "Fingers": "Δάχτυλα",
+    "Action": "Ενέργεια", "Do": "Κάνε", "Second trigger (off), e.g. ctrl+0": "Δεύτερη ενεργοποίηση (off), π.χ. ctrl+0", "Scope": "Εμβέλεια",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Αφήστε κενό για κάθε εφαρμογή. Αλλιώς ο κανόνας ενεργοποιείται μόνο όταν το id της εστιασμένης εφαρμογής περιέχει αυτό το κείμενο (π.χ. firefox). Απαιτεί COSMIC, KDE, Sway ή Hyprland.",
+    "Only in app": "Μόνο στην εφαρμογή", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Σάρωση χώρων εργασίας", "Continuous swipe that follows your fingers using the desktop's native animation.": "Συνεχής σάρωση που ακολουθεί τα δάχτυλα με το εγγενές εφέ κίνησης της επιφάνειας εργασίας.",
+    "Enabled": "Ενεργό", "Fingers on the mouse": "Δάχτυλα στο ποντίκι",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Φυσική: σάρωση αριστερά για τον επόμενο χώρο εργασίας (όπως στο macOS)",
+    "Sensitivity": "Ευαισθησία", "Higher = less finger travel per workspace": "Υψηλότερη = μικρότερη διαδρομή δακτύλου ανά χώρο εργασίας",
+    "Activation distance (mm)": "Απόσταση ενεργοποίησης (mm)", "Finger travel before a swipe starts": "Διαδρομή δακτύλου πριν ξεκινήσει η σάρωση",
+    "Desktop gesture fingers": "Δάχτυλα χειρονομίας επιφάνειας εργασίας", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Δάχτυλα που περιμένει η επιφάνεια εργασίας για αλλαγή χώρου: 4 για COSMIC, 3 για GNOME",
+    "Axis": "Άξονας", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Κατεύθυνση στην οποία η επιφάνεια εργασίας διατάσσει τους χώρους. Και οι δύο: κλείδωμα στην πρώτη κατεύθυνση και απόφαση από την επιφάνεια εργασίας (GNOME: κάθετα = επισκόπηση)",
+    "Desktop touchpad natural scrolling": "Φυσική κύλιση touchpad επιφάνειας εργασίας", "Leave on Auto unless the swipe goes the wrong way": "Αφήστε Αυτόματο εκτός αν η σάρωση πάει ανάποδα",
+    "Pinch zoom": "Ζουμ με τσίμπημα", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Δύο δάχτυλα που απομακρύνονται ή πλησιάζουν γίνονται η εγγενής χειρονομία τσιμπήματος της επιφάνειας εργασίας.",
+    "1.0 = same zoom as a touchpad": "1.0 = ίδιο ζουμ με touchpad", "Change in finger distance before a pinch starts": "Μεταβολή απόστασης δακτύλων πριν ξεκινήσει το τσίμπημα",
+    "Scrolling": "Κύλιση", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "Η κύλιση με ένα δάχτυλο συχνά ξεκινά με ένα μικρό άλμα προς τη λάθος κατεύθυνση όσο το δάχτυλο κάθεται στο κέλυφος.",
+    "Filter the backwards jump": "Φιλτράρισμα του άλματος προς τα πίσω", "Hold the first wheel events until the direction is clear": "Κράτηση των πρώτων συμβάντων ροδέλας μέχρι να ξεκαθαρίσει η κατεύθυνση",
+    "Movement before scrolling starts": "Κίνηση πριν ξεκινήσει η κύλιση", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "Σε μονάδες ροδέλας, 120 = ένα βήμα· αυξήστε αν η κύλιση ακόμα ξεκινά ανάποδα, μειώστε αν ξεκινά αργά",
+    "Mode": "Λειτουργία", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Ολόκληρα βήματα είναι η κλασική αίσθηση ροδέλας· ομαλή είναι λεπτότερη αλλά ταχύτερη σε τερματικά",
+    "Speed": "Ταχύτητα", "Multiplier on scroll distance": "Πολλαπλασιαστής απόστασης κύλισης",
+    "Gestures": "Χειρονομίες", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Πατήματα και γρήγορες σαρώσεις που ενεργοποιούν μια ενέργεια μία φορά, προαιρετικά μόνο σε μία εφαρμογή.",
+    "Tap timing": "Χρονισμός πατήματος", "Tap max duration (ms)": "Μέγ. διάρκεια πατήματος (ms)", "Tap max movement (mm)": "Μέγ. κίνηση πατήματος (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "Τα ακροδάχτυλα κυλούν 7-13 mm στην καμπύλη επιφάνεια", "Tap max lift speed (mm/s)": "Μέγ. ταχύτητα ανύψωσης (mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "Το δάχτυλο πρέπει να είναι σχεδόν ακίνητο όταν σηκώνεται· τα τινάγματα είναι ταχύτερα", "Double tap window (ms)": "Παράθυρο διπλού πατήματος (ms)",
+    "Advanced": "Για προχωρημένους", "Mute scrolling from N fingers": "Σίγαση κύλισης από N δάχτυλα",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Απόρριψη της εξομοίωσης ροδέλας του οδηγού όσο αγγίζουν τόσα δάχτυλα (0 = ποτέ)",
+    "Device name contains": "Το όνομα συσκευής περιέχει",
+    "Appearance": "Εμφάνιση", "Theme": "Θέμα", "System: follow the desktop's light/dark setting": "Σύστημα: ακολουθεί τη ρύθμιση φωτεινό/σκούρο της επιφάνειας εργασίας",
+    "Language": "Γλώσσα", "Follows your desktop language; pick one to override": "Ακολουθεί τη γλώσσα της επιφάνειας εργασίας· επιλέξτε μία για παράκαμψη",
+    "Daemon": "Daemon", "Background service": "Υπηρεσία παρασκηνίου", "Restart": "Επανεκκίνηση", "Config file": "Αρχείο διαμόρφωσης",
+    "only in {app}": "μόνο στην {app}", "No gestures yet": "Δεν υπάρχουν χειρονομίες ακόμα", "Use + to add one": "Χρησιμοποιήστε + για προσθήκη", "Service restarted": "Η υπηρεσία επανεκκινήθηκε",
+    "Natural": "Φυσική", "Inverted": "Αντεστραμμένη", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Οριζόντιος", "Vertical": "Κάθετος", "Both": "Και οι δύο", "Auto-detect": "Αυτόματη ανίχνευση", "On": "Ενεργό", "Off": "Ανενεργό",
+    "Whole notches": "Ολόκληρα βήματα", "Smooth steps": "Ομαλά βήματα", "System": "Σύστημα", "Light": "Φωτεινό", "Dark": "Σκούρο",
+    "Could not save: {error}": "Αδυναμία αποθήκευσης: {error}",
+}
+
+CATALOG["uk"] = {
+    "Swipe": "Гортання", "Tap": "Торкання", "Double tap": "Подвійне торкання",
+    "Left": "Вліво", "Right": "Вправо", "Up": "Вгору", "Down": "Вниз",
+    "Keyboard shortcut": "Комбінація клавіш", "Toggle two shortcuts": "Перемикати дві комбінації", "Cycle through shortcuts": "Перебирати комбінації",
+    "Mouse button": "Кнопка миші", "Run command": "Виконати команду",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "напр. super+w, ctrl+alt+right або послідовність: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "Перший тригер (on), напр. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Кроки через ; напр. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right або middle", "shell command, e.g. notify-send hi": "команда оболонки, напр. notify-send привіт",
+    "Direction": "Напрямок", "Only for swipes": "Лише для гортання", "System language": "Мова системи",
+    "Shortcut: {value}": "Комбінація: {value}", "Toggle: {on}  ⇄  {off}": "Перемикач: {on}  ⇄  {off}", "Cycle: {steps}": "Цикл: {steps}",
+    "Click: {button}": "Клік: {button}", "Run: {command}": "Виконати: {command}",
+    "{kind} · {n} finger": "{kind} · {n} палець", "{kind} · {n} fingers": "{kind} · {n} пальці(в)",
+    "Gesture": "Жест", "Cancel": "Скасувати", "Save": "Зберегти", "Trigger": "Тригер", "Type": "Тип", "Fingers": "Пальці",
+    "Action": "Дія", "Do": "Виконати", "Second trigger (off), e.g. ctrl+0": "Другий тригер (off), напр. ctrl+0", "Scope": "Область",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Залиште порожнім для всіх застосунків. Інакше правило спрацьовує лише коли id активного вікна містить цей текст (напр. firefox). Потрібні COSMIC, KDE, Sway або Hyprland.",
+    "Only in app": "Лише в застосунку", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Гортання робочих просторів", "Continuous swipe that follows your fingers using the desktop's native animation.": "Безперервне гортання, що слідує за пальцями з рідною анімацією стільниці.",
+    "Enabled": "Увімкнено", "Fingers on the mouse": "Пальців на миші",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Природний: гортання вліво переходить до наступного простору (як у macOS)",
+    "Sensitivity": "Чутливість", "Higher = less finger travel per workspace": "Вище = менший шлях пальця на один простір",
+    "Activation distance (mm)": "Відстань активації (мм)", "Finger travel before a swipe starts": "Шлях пальця до початку гортання",
+    "Desktop gesture fingers": "Пальці жесту стільниці", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Скільки пальців стільниця очікує для гортання просторів: 4 для COSMIC, 3 для GNOME",
+    "Axis": "Вісь", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Напрямок, у якому стільниця розташовує простори. Обидві: зафіксувати перший напрямок і дати стільниці вирішити (GNOME: вертикально = огляд)",
+    "Desktop touchpad natural scrolling": "Природне прокручування тачпада стільниці", "Leave on Auto unless the swipe goes the wrong way": "Залиште Авто, якщо гортання не йде не в той бік",
+    "Pinch zoom": "Масштабування щипком", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Два пальці, що розходяться чи сходяться, стають рідним жестом щипка стільниці.",
+    "1.0 = same zoom as a touchpad": "1.0 = таке ж масштабування, як у тачпада", "Change in finger distance before a pinch starts": "Зміна відстані між пальцями до початку щипка",
+    "Scrolling": "Прокручування", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "Прокручування одним пальцем часто починається з короткого стрибка не в той бік, поки подушечка осідає на корпусі.",
+    "Filter the backwards jump": "Фільтрувати стрибок назад", "Hold the first wheel events until the direction is clear": "Затримувати перші події коліщатка, доки напрямок не стане зрозумілим",
+    "Movement before scrolling starts": "Рух до початку прокручування", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "В одиницях коліщатка, 120 = один крок; збільште, якщо прокручування досі починається назад, зменште, якщо починається пізно",
+    "Mode": "Режим", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Цілі кроки — класичне відчуття коліщатка; плавно — точніше, але швидше в терміналах",
+    "Speed": "Швидкість", "Multiplier on scroll distance": "Множник відстані прокручування",
+    "Gestures": "Жести", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Торкання та швидкі гортання, що запускають дію один раз, за бажанням лише в одному застосунку.",
+    "Tap timing": "Таймінги торкань", "Tap max duration (ms)": "Макс. тривалість торкання (мс)", "Tap max movement (mm)": "Макс. рух торкання (мм)",
+    "Fingertips roll 7-13 mm on the curved surface": "Подушечки прокочуються на 7–13 мм по вигнутій поверхні", "Tap max lift speed (mm/s)": "Макс. швидкість відриву (мм/с)",
+    "Finger must be nearly still when it lifts; flicks are faster": "Палець має бути майже нерухомим при відриві; змахи швидші", "Double tap window (ms)": "Вікно подвійного торкання (мс)",
+    "Advanced": "Додатково", "Mute scrolling from N fingers": "Вимкнути прокручування від N пальців",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Відкидати емуляцію коліщатка драйвера, поки торкається стільки пальців (0 = ніколи)",
+    "Device name contains": "Назва пристрою містить",
+    "Appearance": "Вигляд", "Theme": "Тема", "System: follow the desktop's light/dark setting": "Система: слідувати за світлим/темним режимом стільниці",
+    "Language": "Мова", "Follows your desktop language; pick one to override": "Слідує за мовою стільниці; виберіть іншу, щоб перевизначити",
+    "Daemon": "Демон", "Background service": "Фонова служба", "Restart": "Перезапустити", "Config file": "Файл конфігурації",
+    "only in {app}": "лише в {app}", "No gestures yet": "Жестів ще немає", "Use + to add one": "Натисніть +, щоб додати", "Service restarted": "Службу перезапущено",
+    "Natural": "Природний", "Inverted": "Обернений", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Горизонтальна", "Vertical": "Вертикальна", "Both": "Обидві", "Auto-detect": "Автовизначення", "On": "Увімк.", "Off": "Вимк.",
+    "Whole notches": "Цілі кроки", "Smooth steps": "Плавні кроки", "System": "Система", "Light": "Світла", "Dark": "Темна",
+    "Could not save: {error}": "Не вдалося зберегти: {error}",
+}
+
+CATALOG["ru"] = {
+    "Swipe": "Свайп", "Tap": "Касание", "Double tap": "Двойное касание",
+    "Left": "Влево", "Right": "Вправо", "Up": "Вверх", "Down": "Вниз",
+    "Keyboard shortcut": "Сочетание клавиш", "Toggle two shortcuts": "Переключать два сочетания", "Cycle through shortcuts": "Перебирать сочетания",
+    "Mouse button": "Кнопка мыши", "Run command": "Выполнить команду",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "напр. super+w, ctrl+alt+right или последовательность: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "Первый триггер (on), напр. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Шаги через ; напр. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right или middle", "shell command, e.g. notify-send hi": "команда оболочки, напр. notify-send привет",
+    "Direction": "Направление", "Only for swipes": "Только для свайпов", "System language": "Язык системы",
+    "Shortcut: {value}": "Сочетание: {value}", "Toggle: {on}  ⇄  {off}": "Переключатель: {on}  ⇄  {off}", "Cycle: {steps}": "Цикл: {steps}",
+    "Click: {button}": "Клик: {button}", "Run: {command}": "Выполнить: {command}",
+    "{kind} · {n} finger": "{kind} · {n} палец", "{kind} · {n} fingers": "{kind} · {n} пальца(-ев)",
+    "Gesture": "Жест", "Cancel": "Отмена", "Save": "Сохранить", "Trigger": "Триггер", "Type": "Тип", "Fingers": "Пальцы",
+    "Action": "Действие", "Do": "Выполнить", "Second trigger (off), e.g. ctrl+0": "Второй триггер (off), напр. ctrl+0", "Scope": "Область",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Оставьте пустым для всех приложений. Иначе правило срабатывает только когда id активного окна содержит этот текст (напр. firefox). Нужны COSMIC, KDE, Sway или Hyprland.",
+    "Only in app": "Только в приложении", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Перелистывание рабочих столов", "Continuous swipe that follows your fingers using the desktop's native animation.": "Непрерывный свайп, следующий за пальцами с родной анимацией рабочего стола.",
+    "Enabled": "Включено", "Fingers on the mouse": "Пальцев на мыши",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Естественное: свайп влево переходит к следующему рабочему столу (как в macOS)",
+    "Sensitivity": "Чувствительность", "Higher = less finger travel per workspace": "Выше = меньший путь пальца на один рабочий стол",
+    "Activation distance (mm)": "Расстояние активации (мм)", "Finger travel before a swipe starts": "Путь пальца до начала свайпа",
+    "Desktop gesture fingers": "Пальцы жеста рабочего стола", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Сколько пальцев рабочий стол ожидает для свайпа между столами: 4 для COSMIC, 3 для GNOME",
+    "Axis": "Ось", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Направление, в котором рабочий стол располагает столы. Обе: зафиксировать первое направление и дать решать рабочему столу (GNOME: вертикально = обзор)",
+    "Desktop touchpad natural scrolling": "Естественная прокрутка тачпада рабочего стола", "Leave on Auto unless the swipe goes the wrong way": "Оставьте Авто, если свайп не идёт не в ту сторону",
+    "Pinch zoom": "Масштабирование щипком", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Два пальца, расходящиеся или сходящиеся, становятся родным жестом щипка рабочего стола.",
+    "1.0 = same zoom as a touchpad": "1.0 = такой же зум, как у тачпада", "Change in finger distance before a pinch starts": "Изменение расстояния между пальцами до начала щипка",
+    "Scrolling": "Прокрутка", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "Прокрутка одним пальцем часто начинается с короткого рывка не в ту сторону, пока подушечка усаживается на корпусе.",
+    "Filter the backwards jump": "Фильтровать рывок назад", "Hold the first wheel events until the direction is clear": "Удерживать первые события колеса, пока направление не станет ясным",
+    "Movement before scrolling starts": "Движение до начала прокрутки", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "В единицах колеса, 120 = один щелчок; увеличьте, если прокрутка всё ещё начинается назад, уменьшите, если начинается поздно",
+    "Mode": "Режим", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Целые щелчки — классическое ощущение колеса; плавно — точнее, но быстрее в терминалах",
+    "Speed": "Скорость", "Multiplier on scroll distance": "Множитель расстояния прокрутки",
+    "Gestures": "Жесты", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Касания и быстрые свайпы, запускающие действие один раз, при желании только в одном приложении.",
+    "Tap timing": "Тайминги касаний", "Tap max duration (ms)": "Макс. длительность касания (мс)", "Tap max movement (mm)": "Макс. движение касания (мм)",
+    "Fingertips roll 7-13 mm on the curved surface": "Подушечки прокатываются на 7–13 мм по изогнутой поверхности", "Tap max lift speed (mm/s)": "Макс. скорость отрыва (мм/с)",
+    "Finger must be nearly still when it lifts; flicks are faster": "Палец должен быть почти неподвижен при отрыве; взмахи быстрее", "Double tap window (ms)": "Окно двойного касания (мс)",
+    "Advanced": "Дополнительно", "Mute scrolling from N fingers": "Отключать прокрутку от N пальцев",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Отбрасывать эмуляцию колеса драйвера, пока касается столько пальцев (0 = никогда)",
+    "Device name contains": "Имя устройства содержит",
+    "Appearance": "Оформление", "Theme": "Тема", "System: follow the desktop's light/dark setting": "Система: следовать светлой/тёмной теме рабочего стола",
+    "Language": "Язык", "Follows your desktop language; pick one to override": "Следует языку рабочего стола; выберите другой, чтобы переопределить",
+    "Daemon": "Демон", "Background service": "Фоновая служба", "Restart": "Перезапустить", "Config file": "Файл конфигурации",
+    "only in {app}": "только в {app}", "No gestures yet": "Жестов пока нет", "Use + to add one": "Нажмите +, чтобы добавить", "Service restarted": "Служба перезапущена",
+    "Natural": "Естественное", "Inverted": "Обратное", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Горизонтальная", "Vertical": "Вертикальная", "Both": "Обе", "Auto-detect": "Автоопределение", "On": "Вкл.", "Off": "Выкл.",
+    "Whole notches": "Целые щелчки", "Smooth steps": "Плавные шаги", "System": "Система", "Light": "Светлая", "Dark": "Тёмная",
+    "Could not save: {error}": "Не удалось сохранить: {error}",
+}
+
+CATALOG["tr"] = {
+    "Swipe": "Kaydırma", "Tap": "Dokunma", "Double tap": "Çift dokunma",
+    "Left": "Sol", "Right": "Sağ", "Up": "Yukarı", "Down": "Aşağı",
+    "Keyboard shortcut": "Klavye kısayolu", "Toggle two shortcuts": "İki kısayol arasında geçiş", "Cycle through shortcuts": "Kısayollar arasında dön",
+    "Mouse button": "Fare düğmesi", "Run command": "Komut çalıştır",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "örn. super+w, ctrl+alt+right veya bir dizi: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "İlk tetikleyici (on), örn. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "; ile ayrılmış adımlar, örn. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right veya middle", "shell command, e.g. notify-send hi": "kabuk komutu, örn. notify-send selam",
+    "Direction": "Yön", "Only for swipes": "Yalnızca kaydırmalar için", "System language": "Sistem dili",
+    "Shortcut: {value}": "Kısayol: {value}", "Toggle: {on}  ⇄  {off}": "Geçiş: {on}  ⇄  {off}", "Cycle: {steps}": "Döngü: {steps}",
+    "Click: {button}": "Tıklama: {button}", "Run: {command}": "Çalıştır: {command}",
+    "{kind} · {n} finger": "{kind} · {n} parmak", "{kind} · {n} fingers": "{kind} · {n} parmak",
+    "Gesture": "Hareket", "Cancel": "İptal", "Save": "Kaydet", "Trigger": "Tetikleyici", "Type": "Tür", "Fingers": "Parmak",
+    "Action": "Eylem", "Do": "Yap", "Second trigger (off), e.g. ctrl+0": "İkinci tetikleyici (off), örn. ctrl+0", "Scope": "Kapsam",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Tüm uygulamalar için boş bırakın. Aksi halde kural yalnızca odaklanılan pencerenin uygulama kimliği bu metni içerdiğinde tetiklenir (örn. firefox). COSMIC, KDE, Sway veya Hyprland gerektirir.",
+    "Only in app": "Yalnızca şu uygulamada", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Çalışma alanı kaydırma", "Continuous swipe that follows your fingers using the desktop's native animation.": "Masaüstünün yerel animasyonuyla parmaklarınızı izleyen sürekli kaydırma.",
+    "Enabled": "Etkin", "Fingers on the mouse": "Faredeki parmak sayısı",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Doğal: sonraki çalışma alanı için sola kaydırın (macOS tarzı)",
+    "Sensitivity": "Hassasiyet", "Higher = less finger travel per workspace": "Yüksek = çalışma alanı başına daha az parmak hareketi",
+    "Activation distance (mm)": "Etkinleşme mesafesi (mm)", "Finger travel before a swipe starts": "Kaydırma başlamadan önceki parmak hareketi",
+    "Desktop gesture fingers": "Masaüstü hareketi parmak sayısı", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Masaüstünün çalışma alanı kaydırması için beklediği parmak sayısı: COSMIC için 4, GNOME için 3",
+    "Axis": "Eksen", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Masaüstünüzün çalışma alanlarını dizdiği yön. Her ikisi: ilk yöne kilitle ve kararı masaüstüne bırak (GNOME: dikey = genel bakış)",
+    "Desktop touchpad natural scrolling": "Masaüstü dokunmatik yüzey doğal kaydırması", "Leave on Auto unless the swipe goes the wrong way": "Kaydırma ters yöne gitmiyorsa Otomatik'te bırakın",
+    "Pinch zoom": "Sıkıştırarak yakınlaştırma", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Birbirinden uzaklaşan veya yaklaşan iki parmak masaüstünün yerel sıkıştırma hareketine dönüşür.",
+    "1.0 = same zoom as a touchpad": "1.0 = dokunmatik yüzeyle aynı yakınlaştırma", "Change in finger distance before a pinch starts": "Sıkıştırma başlamadan önceki parmak mesafesi değişimi",
+    "Scrolling": "Kaydırma", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "Tek parmakla kaydırma, parmak ucu kabuğa yerleşirken genellikle ters yöne kısa bir sıçramayla başlar.",
+    "Filter the backwards jump": "Geri sıçramayı filtrele", "Hold the first wheel events until the direction is clear": "Yön netleşene kadar ilk tekerlek olaylarını beklet",
+    "Movement before scrolling starts": "Kaydırma başlamadan önceki hareket", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "Tekerlek biriminde, 120 = bir kademe; kaydırma hâlâ geri başlıyorsa artırın, geç başlıyorsa azaltın",
+    "Mode": "Mod", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Tam kademeler klasik tekerlek hissidir; akıcı daha incedir ama terminallerde daha hızlıdır",
+    "Speed": "Hız", "Multiplier on scroll distance": "Kaydırma mesafesi çarpanı",
+    "Gestures": "Hareketler", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Bir eylemi bir kez tetikleyen dokunmalar ve hızlı kaydırmalar; isteğe bağlı olarak yalnızca bir uygulamada.",
+    "Tap timing": "Dokunma zamanlaması", "Tap max duration (ms)": "Maks. dokunma süresi (ms)", "Tap max movement (mm)": "Maks. dokunma hareketi (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "Parmak uçları kavisli yüzeyde 7-13 mm yuvarlanır", "Tap max lift speed (mm/s)": "Maks. kaldırma hızı (mm/sn)",
+    "Finger must be nearly still when it lifts; flicks are faster": "Parmak kalkarken neredeyse hareketsiz olmalı; fiskeler daha hızlıdır", "Double tap window (ms)": "Çift dokunma penceresi (ms)",
+    "Advanced": "Gelişmiş", "Mute scrolling from N fingers": "N parmaktan itibaren kaydırmayı sustur",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Bu kadar parmak dokunurken sürücünün tekerlek öykünmesini yok say (0 = asla)",
+    "Device name contains": "Cihaz adı şunu içerir",
+    "Appearance": "Görünüm", "Theme": "Tema", "System: follow the desktop's light/dark setting": "Sistem: masaüstünün açık/koyu ayarını izle",
+    "Language": "Dil", "Follows your desktop language; pick one to override": "Masaüstü dilini izler; geçersiz kılmak için birini seçin",
+    "Daemon": "Arka plan hizmeti", "Background service": "Arka plan hizmeti", "Restart": "Yeniden başlat", "Config file": "Yapılandırma dosyası",
+    "only in {app}": "yalnızca {app} içinde", "No gestures yet": "Henüz hareket yok", "Use + to add one": "Eklemek için + kullanın", "Service restarted": "Hizmet yeniden başlatıldı",
+    "Natural": "Doğal", "Inverted": "Ters", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Yatay", "Vertical": "Dikey", "Both": "Her ikisi", "Auto-detect": "Otomatik algıla", "On": "Açık", "Off": "Kapalı",
+    "Whole notches": "Tam kademeler", "Smooth steps": "Akıcı adımlar", "System": "Sistem", "Light": "Açık", "Dark": "Koyu",
+    "Could not save: {error}": "Kaydedilemedi: {error}",
+}
+
+CATALOG["ar"] = {
+    "Swipe": "تمرير", "Tap": "نقرة", "Double tap": "نقرة مزدوجة",
+    "Left": "يسار", "Right": "يمين", "Up": "أعلى", "Down": "أسفل",
+    "Keyboard shortcut": "اختصار لوحة المفاتيح", "Toggle two shortcuts": "التبديل بين اختصارين", "Cycle through shortcuts": "التنقل الدوري بين الاختصارات",
+    "Mouse button": "زر الفأرة", "Run command": "تشغيل أمر",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "مثلًا super+w أو ctrl+alt+right أو تسلسل: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "المشغّل الأول (on)، مثلًا ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "خطوات مفصولة بـ ; مثلًا ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left أو right أو middle", "shell command, e.g. notify-send hi": "أمر shell، مثلًا notify-send مرحبا",
+    "Direction": "الاتجاه", "Only for swipes": "للتمرير فقط", "System language": "لغة النظام",
+    "Shortcut: {value}": "اختصار: {value}", "Toggle: {on}  ⇄  {off}": "تبديل: {on}  ⇄  {off}", "Cycle: {steps}": "دورة: {steps}",
+    "Click: {button}": "نقر: {button}", "Run: {command}": "تشغيل: {command}",
+    "{kind} · {n} finger": "{kind} · إصبع واحد ({n})", "{kind} · {n} fingers": "{kind} · {n} أصابع",
+    "Gesture": "إيماءة", "Cancel": "إلغاء", "Save": "حفظ", "Trigger": "المشغّل", "Type": "النوع", "Fingers": "الأصابع",
+    "Action": "الإجراء", "Do": "نفّذ", "Second trigger (off), e.g. ctrl+0": "المشغّل الثاني (off)، مثلًا ctrl+0", "Scope": "النطاق",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "اتركه فارغًا لكل التطبيقات. وإلا فلن تعمل القاعدة إلا عندما يحتوي معرّف تطبيق النافذة النشطة على هذا النص (مثلًا firefox). يتطلب COSMIC أو KDE أو Sway أو Hyprland.",
+    "Only in app": "في التطبيق فقط", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "تمرير مساحات العمل", "Continuous swipe that follows your fingers using the desktop's native animation.": "تمرير متواصل يتبع أصابعك بحركة سطح المكتب الأصلية.",
+    "Enabled": "مفعّل", "Fingers on the mouse": "الأصابع على الفأرة",
+    "Natural: swipe left to go to the next workspace (macOS style)": "طبيعي: مرّر يسارًا للانتقال إلى مساحة العمل التالية (بأسلوب macOS)",
+    "Sensitivity": "الحساسية", "Higher = less finger travel per workspace": "أعلى = مسافة إصبع أقل لكل مساحة عمل",
+    "Activation distance (mm)": "مسافة التفعيل (مم)", "Finger travel before a swipe starts": "مسافة حركة الإصبع قبل بدء التمرير",
+    "Desktop gesture fingers": "أصابع إيماءة سطح المكتب", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "عدد الأصابع الذي يتوقعه سطح المكتب لتمرير مساحات العمل: 4 لـ COSMIC و3 لـ GNOME",
+    "Axis": "المحور", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "الاتجاه الذي يرتّب به سطح المكتب مساحات العمل. كلاهما: تثبيت الاتجاه الأول وترك القرار لسطح المكتب (GNOME: عمودي = نظرة عامة)",
+    "Desktop touchpad natural scrolling": "التمرير الطبيعي للوحة لمس سطح المكتب", "Leave on Auto unless the swipe goes the wrong way": "اتركه على تلقائي ما لم يذهب التمرير في الاتجاه الخاطئ",
+    "Pinch zoom": "التكبير بالقرص", "Two fingers moving apart or together become the desktop's native pinch gesture.": "إصبعان يتباعدان أو يتقاربان يصبحان إيماءة القرص الأصلية لسطح المكتب.",
+    "1.0 = same zoom as a touchpad": "1.0 = نفس تكبير لوحة اللمس", "Change in finger distance before a pinch starts": "تغيّر المسافة بين الإصبعين قبل بدء القرص",
+    "Scrolling": "التمرير", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "غالبًا ما يبدأ التمرير بإصبع واحد بقفزة قصيرة في الاتجاه الخاطئ بينما يستقر طرف الإصبع على الهيكل.",
+    "Filter the backwards jump": "تصفية القفزة الخلفية", "Hold the first wheel events until the direction is clear": "حجز أحداث العجلة الأولى حتى يتضح الاتجاه",
+    "Movement before scrolling starts": "الحركة قبل بدء التمرير", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "بوحدات العجلة، 120 = درجة واحدة؛ ارفعها إن كان التمرير لا يزال يبدأ للخلف، واخفضها إن بدأ متأخرًا",
+    "Mode": "الوضع", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "الدرجات الكاملة هي الإحساس الكلاسيكي بالعجلة؛ السلس أدق لكنه أسرع في الطرفيات",
+    "Speed": "السرعة", "Multiplier on scroll distance": "مضاعف مسافة التمرير",
+    "Gestures": "الإيماءات", "Taps and quick swipes that trigger an action once, optionally only in one app.": "نقرات وتمريرات سريعة تشغّل إجراءً مرة واحدة، واختياريًا في تطبيق واحد فقط.",
+    "Tap timing": "توقيت النقر", "Tap max duration (ms)": "أقصى مدة للنقرة (مللي ثانية)", "Tap max movement (mm)": "أقصى حركة للنقرة (مم)",
+    "Fingertips roll 7-13 mm on the curved surface": "تتدحرج أطراف الأصابع 7-13 مم على السطح المنحني", "Tap max lift speed (mm/s)": "أقصى سرعة رفع (مم/ث)",
+    "Finger must be nearly still when it lifts; flicks are faster": "يجب أن يكون الإصبع شبه ثابت عند رفعه؛ النقرات الخاطفة أسرع", "Double tap window (ms)": "نافذة النقرة المزدوجة (مللي ثانية)",
+    "Advanced": "متقدم", "Mute scrolling from N fingers": "كتم التمرير بدءًا من N أصابع",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "تجاهل محاكاة عجلة التمرير في برنامج التشغيل أثناء لمس هذا العدد من الأصابع (0 = أبدًا)",
+    "Device name contains": "اسم الجهاز يحتوي على",
+    "Appearance": "المظهر", "Theme": "السمة", "System: follow the desktop's light/dark setting": "النظام: اتباع إعداد الفاتح/الداكن لسطح المكتب",
+    "Language": "اللغة", "Follows your desktop language; pick one to override": "يتبع لغة سطح المكتب؛ اختر لغة لتجاوزها",
+    "Daemon": "الخدمة", "Background service": "خدمة الخلفية", "Restart": "إعادة التشغيل", "Config file": "ملف الإعدادات",
+    "only in {app}": "فقط في {app}", "No gestures yet": "لا توجد إيماءات بعد", "Use + to add one": "استخدم + لإضافة واحدة", "Service restarted": "أُعيد تشغيل الخدمة",
+    "Natural": "طبيعي", "Inverted": "معكوس", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "أفقي", "Vertical": "عمودي", "Both": "كلاهما", "Auto-detect": "اكتشاف تلقائي", "On": "تشغيل", "Off": "إيقاف",
+    "Whole notches": "درجات كاملة", "Smooth steps": "خطوات سلسة", "System": "النظام", "Light": "فاتح", "Dark": "داكن",
+    "Could not save: {error}": "تعذّر الحفظ: {error}",
+}
+
+CATALOG["hi"] = {
+    "Swipe": "स्वाइप", "Tap": "टैप", "Double tap": "डबल टैप",
+    "Left": "बाएँ", "Right": "दाएँ", "Up": "ऊपर", "Down": "नीचे",
+    "Keyboard shortcut": "कीबोर्ड शॉर्टकट", "Toggle two shortcuts": "दो शॉर्टकट के बीच टॉगल", "Cycle through shortcuts": "शॉर्टकट में साइकल",
+    "Mouse button": "माउस बटन", "Run command": "कमांड चलाएँ",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "जैसे super+w, ctrl+alt+right, या एक क्रम: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "पहला ट्रिगर (on), जैसे ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "; से अलग किए गए चरण, जैसे ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right या middle", "shell command, e.g. notify-send hi": "शेल कमांड, जैसे notify-send hi",
+    "Direction": "दिशा", "Only for swipes": "केवल स्वाइप के लिए", "System language": "सिस्टम की भाषा",
+    "Shortcut: {value}": "शॉर्टकट: {value}", "Toggle: {on}  ⇄  {off}": "टॉगल: {on}  ⇄  {off}", "Cycle: {steps}": "साइकल: {steps}",
+    "Click: {button}": "क्लिक: {button}", "Run: {command}": "चलाएँ: {command}",
+    "{kind} · {n} finger": "{kind} · {n} उंगली", "{kind} · {n} fingers": "{kind} · {n} उंगलियाँ",
+    "Gesture": "जेस्चर", "Cancel": "रद्द करें", "Save": "सहेजें", "Trigger": "ट्रिगर", "Type": "प्रकार", "Fingers": "उंगलियाँ",
+    "Action": "क्रिया", "Do": "करें", "Second trigger (off), e.g. ctrl+0": "दूसरा ट्रिगर (off), जैसे ctrl+0", "Scope": "दायरा",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "हर ऐप के लिए खाली छोड़ें। अन्यथा नियम तभी चलेगा जब फ़ोकस वाली विंडो की ऐप आईडी में यह टेक्स्ट हो (जैसे firefox)। COSMIC, KDE, Sway या Hyprland चाहिए।",
+    "Only in app": "केवल इस ऐप में", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "वर्कस्पेस स्वाइप", "Continuous swipe that follows your fingers using the desktop's native animation.": "डेस्कटॉप के नेटिव एनिमेशन के साथ आपकी उंगलियों का पीछा करने वाला निरंतर स्वाइप।",
+    "Enabled": "सक्षम", "Fingers on the mouse": "माउस पर उंगलियाँ",
+    "Natural: swipe left to go to the next workspace (macOS style)": "नेचुरल: अगले वर्कस्पेस पर जाने के लिए बाएँ स्वाइप करें (macOS शैली)",
+    "Sensitivity": "संवेदनशीलता", "Higher = less finger travel per workspace": "अधिक = प्रति वर्कस्पेस उंगली की कम दूरी",
+    "Activation distance (mm)": "सक्रियण दूरी (mm)", "Finger travel before a swipe starts": "स्वाइप शुरू होने से पहले उंगली की दूरी",
+    "Desktop gesture fingers": "डेस्कटॉप जेस्चर की उंगलियाँ", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "वर्कस्पेस स्वाइप के लिए डेस्कटॉप जितनी उंगलियाँ चाहता है: COSMIC के लिए 4, GNOME के लिए 3",
+    "Axis": "अक्ष", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "वह दिशा जिसमें आपका डेस्कटॉप वर्कस्पेस सजाता है। दोनों: पहली दिशा पर लॉक करें और डेस्कटॉप को तय करने दें (GNOME: लंबवत = ओवरव्यू)",
+    "Desktop touchpad natural scrolling": "डेस्कटॉप टचपैड नेचुरल स्क्रॉलिंग", "Leave on Auto unless the swipe goes the wrong way": "जब तक स्वाइप उल्टी दिशा में न जाए, ऑटो पर रखें",
+    "Pinch zoom": "पिंच ज़ूम", "Two fingers moving apart or together become the desktop's native pinch gesture.": "दो उंगलियाँ दूर या पास होने पर डेस्कटॉप का नेटिव पिंच जेस्चर बन जाती हैं।",
+    "1.0 = same zoom as a touchpad": "1.0 = टचपैड जितना ही ज़ूम", "Change in finger distance before a pinch starts": "पिंच शुरू होने से पहले उंगलियों की दूरी में बदलाव",
+    "Scrolling": "स्क्रॉलिंग", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "एक उंगली से स्क्रॉल अक्सर उल्टी दिशा में छोटी छलांग से शुरू होता है, जब उंगली का सिरा शेल पर टिकता है।",
+    "Filter the backwards jump": "पीछे की छलांग फ़िल्टर करें", "Hold the first wheel events until the direction is clear": "दिशा स्पष्ट होने तक पहले व्हील इवेंट रोकें",
+    "Movement before scrolling starts": "स्क्रॉल शुरू होने से पहले की गति", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "व्हील इकाइयों में, 120 = एक नॉच; स्क्रॉल अब भी पीछे से शुरू हो तो बढ़ाएँ, देर से शुरू हो तो घटाएँ",
+    "Mode": "मोड", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "पूरे नॉच क्लासिक व्हील अहसास है; स्मूद अधिक बारीक पर टर्मिनल में तेज़",
+    "Speed": "गति", "Multiplier on scroll distance": "स्क्रॉल दूरी का गुणक",
+    "Gestures": "जेस्चर", "Taps and quick swipes that trigger an action once, optionally only in one app.": "टैप और तेज़ स्वाइप जो एक बार क्रिया चलाते हैं, वैकल्पिक रूप से केवल एक ऐप में।",
+    "Tap timing": "टैप टाइमिंग", "Tap max duration (ms)": "टैप की अधिकतम अवधि (ms)", "Tap max movement (mm)": "टैप की अधिकतम गति (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "घुमावदार सतह पर उंगलियों के सिरे 7-13 mm लुढ़कते हैं", "Tap max lift speed (mm/s)": "उठाने की अधिकतम गति (mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "उठते समय उंगली लगभग स्थिर होनी चाहिए; फ्लिक तेज़ होते हैं", "Double tap window (ms)": "डबल टैप विंडो (ms)",
+    "Advanced": "उन्नत", "Mute scrolling from N fingers": "N उंगलियों से स्क्रॉल म्यूट करें",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "इतनी उंगलियाँ छूने पर ड्राइवर का स्क्रॉल-व्हील इम्यूलेशन छोड़ दें (0 = कभी नहीं)",
+    "Device name contains": "डिवाइस नाम में शामिल है",
+    "Appearance": "रूप", "Theme": "थीम", "System: follow the desktop's light/dark setting": "सिस्टम: डेस्कटॉप की लाइट/डार्क सेटिंग का पालन करें",
+    "Language": "भाषा", "Follows your desktop language; pick one to override": "डेस्कटॉप की भाषा का पालन करता है; बदलने के लिए एक चुनें",
+    "Daemon": "डेमन", "Background service": "बैकग्राउंड सेवा", "Restart": "पुनः आरंभ", "Config file": "कॉन्फ़िग फ़ाइल",
+    "only in {app}": "केवल {app} में", "No gestures yet": "अभी कोई जेस्चर नहीं", "Use + to add one": "जोड़ने के लिए + का उपयोग करें", "Service restarted": "सेवा पुनः आरंभ हुई",
+    "Natural": "नेचुरल", "Inverted": "उल्टा", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "क्षैतिज", "Vertical": "लंबवत", "Both": "दोनों", "Auto-detect": "स्वतः पहचान", "On": "चालू", "Off": "बंद",
+    "Whole notches": "पूरे नॉच", "Smooth steps": "स्मूद चरण", "System": "सिस्टम", "Light": "लाइट", "Dark": "डार्क",
+    "Could not save: {error}": "सहेज नहीं सका: {error}",
+}
+
+CATALOG["zh"] = {
+    "Swipe": "滑动", "Tap": "轻点", "Double tap": "双击",
+    "Left": "左", "Right": "右", "Up": "上", "Down": "下",
+    "Keyboard shortcut": "键盘快捷键", "Toggle two shortcuts": "在两个快捷键间切换", "Cycle through shortcuts": "循环执行快捷键",
+    "Mouse button": "鼠标按键", "Run command": "运行命令",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "例如 super+w、ctrl+alt+right，或序列：ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "第一次触发（on），例如 ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "以 ; 分隔的步骤，例如 ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left、right 或 middle", "shell command, e.g. notify-send hi": "shell 命令，例如 notify-send hi",
+    "Direction": "方向", "Only for swipes": "仅用于滑动", "System language": "系统语言",
+    "Shortcut: {value}": "快捷键：{value}", "Toggle: {on}  ⇄  {off}": "切换：{on}  ⇄  {off}", "Cycle: {steps}": "循环：{steps}",
+    "Click: {button}": "点击：{button}", "Run: {command}": "运行：{command}",
+    "{kind} · {n} finger": "{kind} · {n} 指", "{kind} · {n} fingers": "{kind} · {n} 指",
+    "Gesture": "手势", "Cancel": "取消", "Save": "保存", "Trigger": "触发", "Type": "类型", "Fingers": "手指数",
+    "Action": "动作", "Do": "执行", "Second trigger (off), e.g. ctrl+0": "第二次触发（off），例如 ctrl+0", "Scope": "范围",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "留空则对所有应用生效。否则仅当聚焦窗口的应用 ID 包含此文本（例如 firefox）时触发。需要 COSMIC、KDE、Sway 或 Hyprland。",
+    "Only in app": "仅在此应用中", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "工作区滑动", "Continuous swipe that follows your fingers using the desktop's native animation.": "跟随手指的连续滑动，使用桌面的原生动画。",
+    "Enabled": "启用", "Fingers on the mouse": "鼠标上的手指数",
+    "Natural: swipe left to go to the next workspace (macOS style)": "自然：向左滑动前往下一个工作区（macOS 风格）",
+    "Sensitivity": "灵敏度", "Higher = less finger travel per workspace": "越高 = 每个工作区所需的手指移动越少",
+    "Activation distance (mm)": "触发距离（mm）", "Finger travel before a swipe starts": "滑动开始前的手指移动距离",
+    "Desktop gesture fingers": "桌面手势手指数", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "桌面切换工作区所需的手指数：COSMIC 为 4，GNOME 为 3",
+    "Axis": "轴", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "桌面排列工作区的方向。双轴：锁定首个方向并交由桌面决定（GNOME：垂直 = 概览）",
+    "Desktop touchpad natural scrolling": "桌面触控板自然滚动", "Leave on Auto unless the swipe goes the wrong way": "除非滑动方向相反，否则保持自动",
+    "Pinch zoom": "捏合缩放", "Two fingers moving apart or together become the desktop's native pinch gesture.": "两指张开或合拢变成桌面的原生捏合手势。",
+    "1.0 = same zoom as a touchpad": "1.0 = 与触控板相同的缩放", "Change in finger distance before a pinch starts": "捏合开始前的指间距离变化",
+    "Scrolling": "滚动", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "单指滚动在指尖落到外壳上时常以一次反向小跳动开始。",
+    "Filter the backwards jump": "过滤反向跳动", "Hold the first wheel events until the direction is clear": "在方向明确前先保留最初的滚轮事件",
+    "Movement before scrolling starts": "滚动开始前的移动量", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "以滚轮单位计，120 = 一格；若滚动仍反向开始则调高，若开始太晚则调低",
+    "Mode": "模式", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "整格是经典的滚轮手感；平滑更精细，但在终端里更快",
+    "Speed": "速度", "Multiplier on scroll distance": "滚动距离的倍数",
+    "Gestures": "手势", "Taps and quick swipes that trigger an action once, optionally only in one app.": "轻点和快速滑动触发一次动作，可选仅在某个应用中生效。",
+    "Tap timing": "轻点时序", "Tap max duration (ms)": "轻点最长时长（ms）", "Tap max movement (mm)": "轻点最大移动（mm）",
+    "Fingertips roll 7-13 mm on the curved surface": "指尖在曲面上会滚动 7–13 mm", "Tap max lift speed (mm/s)": "抬起最大速度（mm/s）",
+    "Finger must be nearly still when it lifts; flicks are faster": "抬起时手指须几乎静止；轻弹更快", "Double tap window (ms)": "双击时间窗（ms）",
+    "Advanced": "高级", "Mute scrolling from N fingers": "N 指及以上时静音滚动",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "当触摸手指数达到此值时丢弃驱动的滚轮模拟（0 = 从不）",
+    "Device name contains": "设备名称包含",
+    "Appearance": "外观", "Theme": "主题", "System: follow the desktop's light/dark setting": "系统：跟随桌面的浅色/深色设置",
+    "Language": "语言", "Follows your desktop language; pick one to override": "跟随桌面语言；选择一种以覆盖",
+    "Daemon": "守护进程", "Background service": "后台服务", "Restart": "重启", "Config file": "配置文件",
+    "only in {app}": "仅在 {app} 中", "No gestures yet": "还没有手势", "Use + to add one": "点击 + 添加", "Service restarted": "服务已重启",
+    "Natural": "自然", "Inverted": "反向", "4 (COSMIC, KDE)": "4（COSMIC、KDE）", "3 (GNOME)": "3（GNOME）",
+    "Horizontal": "水平", "Vertical": "垂直", "Both": "双轴", "Auto-detect": "自动检测", "On": "开", "Off": "关",
+    "Whole notches": "整格", "Smooth steps": "平滑步进", "System": "系统", "Light": "浅色", "Dark": "深色",
+    "Could not save: {error}": "无法保存：{error}",
+}
+
+CATALOG["ja"] = {
+    "Swipe": "スワイプ", "Tap": "タップ", "Double tap": "ダブルタップ",
+    "Left": "左", "Right": "右", "Up": "上", "Down": "下",
+    "Keyboard shortcut": "キーボードショートカット", "Toggle two shortcuts": "2 つのショートカットを切り替え", "Cycle through shortcuts": "ショートカットを順に実行",
+    "Mouse button": "マウスボタン", "Run command": "コマンドを実行",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "例：super+w、ctrl+alt+right、または連続入力：ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "最初のトリガー（on）、例：ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "; で区切ったステップ、例：ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left、right または middle", "shell command, e.g. notify-send hi": "シェルコマンド、例：notify-send hi",
+    "Direction": "方向", "Only for swipes": "スワイプのみ", "System language": "システムの言語",
+    "Shortcut: {value}": "ショートカット：{value}", "Toggle: {on}  ⇄  {off}": "切り替え：{on}  ⇄  {off}", "Cycle: {steps}": "サイクル：{steps}",
+    "Click: {button}": "クリック：{button}", "Run: {command}": "実行：{command}",
+    "{kind} · {n} finger": "{kind} · {n} 本指", "{kind} · {n} fingers": "{kind} · {n} 本指",
+    "Gesture": "ジェスチャー", "Cancel": "キャンセル", "Save": "保存", "Trigger": "トリガー", "Type": "種類", "Fingers": "指の本数",
+    "Action": "アクション", "Do": "実行内容", "Second trigger (off), e.g. ctrl+0": "2 番目のトリガー（off）、例：ctrl+0", "Scope": "適用範囲",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "すべてのアプリに適用するなら空のまま。入力すると、フォーカス中のウィンドウのアプリ ID にこの文字列（例：firefox）が含まれるときだけ発火します。COSMIC、KDE、Sway または Hyprland が必要です。",
+    "Only in app": "このアプリのみ", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "ワークスペーススワイプ", "Continuous swipe that follows your fingers using the desktop's native animation.": "デスクトップのネイティブアニメーションで指に追従する連続スワイプ。",
+    "Enabled": "有効", "Fingers on the mouse": "マウス上の指の本数",
+    "Natural: swipe left to go to the next workspace (macOS style)": "ナチュラル：左にスワイプで次のワークスペースへ（macOS 風）",
+    "Sensitivity": "感度", "Higher = less finger travel per workspace": "高いほどワークスペース 1 つあたりの指の移動が少なくなります",
+    "Activation distance (mm)": "開始距離（mm）", "Finger travel before a swipe starts": "スワイプが始まるまでの指の移動量",
+    "Desktop gesture fingers": "デスクトップジェスチャーの指の本数", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "ワークスペーススワイプにデスクトップが期待する本数：COSMIC は 4、GNOME は 3",
+    "Axis": "軸", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "デスクトップがワークスペースを並べる方向。両方：最初の方向に固定し、判断をデスクトップに任せます（GNOME：垂直 = オーバービュー）",
+    "Desktop touchpad natural scrolling": "デスクトップのタッチパッドのナチュラルスクロール", "Leave on Auto unless the swipe goes the wrong way": "スワイプが逆方向にならない限り「自動」のままに",
+    "Pinch zoom": "ピンチズーム", "Two fingers moving apart or together become the desktop's native pinch gesture.": "2 本の指の開閉がデスクトップのネイティブなピンチジェスチャーになります。",
+    "1.0 = same zoom as a touchpad": "1.0 = タッチパッドと同じズーム", "Change in finger distance before a pinch starts": "ピンチが始まるまでの指の間隔の変化",
+    "Scrolling": "スクロール", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "1 本指のスクロールは、指先が本体に落ち着くまでに逆方向へ少し飛ぶことがよくあります。",
+    "Filter the backwards jump": "逆方向のジャンプを除去", "Hold the first wheel events until the direction is clear": "方向が確定するまで最初のホイールイベントを保留",
+    "Movement before scrolling starts": "スクロール開始までの移動量", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "ホイール単位で 120 = 1 ノッチ。まだ逆方向に始まるなら上げ、始まりが遅いなら下げてください",
+    "Mode": "モード", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "ノッチ単位はクラシックなホイールの感触、スムーズはより細かいがターミナルでは速くなります",
+    "Speed": "速度", "Multiplier on scroll distance": "スクロール距離の倍率",
+    "Gestures": "ジェスチャー", "Taps and quick swipes that trigger an action once, optionally only in one app.": "アクションを 1 回発火するタップと素早いスワイプ。任意で特定のアプリのみ。",
+    "Tap timing": "タップのタイミング", "Tap max duration (ms)": "タップの最大時間（ms）", "Tap max movement (mm)": "タップの最大移動（mm）",
+    "Fingertips roll 7-13 mm on the curved surface": "指先は曲面上で 7〜13 mm 転がります", "Tap max lift speed (mm/s)": "離す速度の上限（mm/s）",
+    "Finger must be nearly still when it lifts; flicks are faster": "離すときに指がほぼ静止している必要があります。フリックはそれより速くなります", "Double tap window (ms)": "ダブルタップの間隔（ms）",
+    "Advanced": "詳細", "Mute scrolling from N fingers": "N 本指以上でスクロールをミュート",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "この本数の指が触れている間、ドライバーのホイールエミュレーションを捨てます（0 = しない）",
+    "Device name contains": "デバイス名に含まれる文字列",
+    "Appearance": "外観", "Theme": "テーマ", "System: follow the desktop's light/dark setting": "システム：デスクトップのライト/ダーク設定に従う",
+    "Language": "言語", "Follows your desktop language; pick one to override": "デスクトップの言語に従います。上書きするには選択してください",
+    "Daemon": "デーモン", "Background service": "バックグラウンドサービス", "Restart": "再起動", "Config file": "設定ファイル",
+    "only in {app}": "{app} のみ", "No gestures yet": "ジェスチャーはまだありません", "Use + to add one": "+ で追加", "Service restarted": "サービスを再起動しました",
+    "Natural": "ナチュラル", "Inverted": "反転", "4 (COSMIC, KDE)": "4（COSMIC、KDE）", "3 (GNOME)": "3（GNOME）",
+    "Horizontal": "水平", "Vertical": "垂直", "Both": "両方", "Auto-detect": "自動検出", "On": "オン", "Off": "オフ",
+    "Whole notches": "ノッチ単位", "Smooth steps": "スムーズ", "System": "システム", "Light": "ライト", "Dark": "ダーク",
+    "Could not save: {error}": "保存できませんでした：{error}",
+}
+
+CATALOG["ko"] = {
+    "Swipe": "스와이프", "Tap": "탭", "Double tap": "두 번 탭",
+    "Left": "왼쪽", "Right": "오른쪽", "Up": "위", "Down": "아래",
+    "Keyboard shortcut": "키보드 단축키", "Toggle two shortcuts": "두 단축키 전환", "Cycle through shortcuts": "단축키 순환",
+    "Mouse button": "마우스 버튼", "Run command": "명령 실행",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "예: super+w, ctrl+alt+right 또는 순서 입력: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "첫 번째 트리거(on), 예: ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": ";로 구분된 단계, 예: ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right 또는 middle", "shell command, e.g. notify-send hi": "셸 명령, 예: notify-send hi",
+    "Direction": "방향", "Only for swipes": "스와이프에만 해당", "System language": "시스템 언어",
+    "Shortcut: {value}": "단축키: {value}", "Toggle: {on}  ⇄  {off}": "전환: {on}  ⇄  {off}", "Cycle: {steps}": "순환: {steps}",
+    "Click: {button}": "클릭: {button}", "Run: {command}": "실행: {command}",
+    "{kind} · {n} finger": "{kind} · {n}개 손가락", "{kind} · {n} fingers": "{kind} · {n}개 손가락",
+    "Gesture": "제스처", "Cancel": "취소", "Save": "저장", "Trigger": "트리거", "Type": "유형", "Fingers": "손가락 수",
+    "Action": "동작", "Do": "실행", "Second trigger (off), e.g. ctrl+0": "두 번째 트리거(off), 예: ctrl+0", "Scope": "범위",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "모든 앱에 적용하려면 비워 두세요. 입력하면 포커스된 창의 앱 ID에 이 텍스트(예: firefox)가 포함될 때만 규칙이 실행됩니다. COSMIC, KDE, Sway 또는 Hyprland가 필요합니다.",
+    "Only in app": "이 앱에서만", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "작업 공간 스와이프", "Continuous swipe that follows your fingers using the desktop's native animation.": "데스크톱 고유 애니메이션으로 손가락을 따라가는 연속 스와이프입니다.",
+    "Enabled": "사용", "Fingers on the mouse": "마우스 위 손가락 수",
+    "Natural: swipe left to go to the next workspace (macOS style)": "자연스럽게: 왼쪽으로 스와이프하면 다음 작업 공간으로 (macOS 방식)",
+    "Sensitivity": "민감도", "Higher = less finger travel per workspace": "높을수록 작업 공간당 손가락 이동이 줄어듭니다",
+    "Activation distance (mm)": "활성화 거리(mm)", "Finger travel before a swipe starts": "스와이프가 시작되기 전 손가락 이동 거리",
+    "Desktop gesture fingers": "데스크톱 제스처 손가락 수", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "데스크톱이 작업 공간 스와이프에 기대하는 손가락 수: COSMIC은 4, GNOME은 3",
+    "Axis": "축", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "데스크톱이 작업 공간을 배치하는 방향. 양쪽: 첫 방향에 고정하고 데스크톱이 결정하게 함 (GNOME: 세로 = 개요)",
+    "Desktop touchpad natural scrolling": "데스크톱 터치패드 자연 스크롤", "Leave on Auto unless the swipe goes the wrong way": "스와이프가 반대로 가지 않는 한 자동으로 두세요",
+    "Pinch zoom": "핀치 줌", "Two fingers moving apart or together become the desktop's native pinch gesture.": "두 손가락을 벌리거나 모으면 데스크톱 고유의 핀치 제스처가 됩니다.",
+    "1.0 = same zoom as a touchpad": "1.0 = 터치패드와 같은 줌", "Change in finger distance before a pinch starts": "핀치가 시작되기 전 손가락 간격 변화",
+    "Scrolling": "스크롤", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "한 손가락 스크롤은 손끝이 표면에 자리 잡는 동안 반대 방향으로 짧게 튀며 시작되는 경우가 많습니다.",
+    "Filter the backwards jump": "역방향 튐 걸러내기", "Hold the first wheel events until the direction is clear": "방향이 분명해질 때까지 첫 휠 이벤트 보류",
+    "Movement before scrolling starts": "스크롤이 시작되기 전 이동량", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "휠 단위로 120 = 한 칸. 스크롤이 여전히 역방향으로 시작하면 높이고, 늦게 시작하면 낮추세요",
+    "Mode": "모드", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "칸 단위는 고전적인 휠 느낌, 부드럽게는 더 세밀하지만 터미널에서 더 빠릅니다",
+    "Speed": "속도", "Multiplier on scroll distance": "스크롤 거리 배율",
+    "Gestures": "제스처", "Taps and quick swipes that trigger an action once, optionally only in one app.": "동작을 한 번 실행하는 탭과 빠른 스와이프. 선택적으로 한 앱에서만.",
+    "Tap timing": "탭 타이밍", "Tap max duration (ms)": "탭 최대 지속 시간(ms)", "Tap max movement (mm)": "탭 최대 이동(mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "손끝은 곡면에서 7~13 mm 구릅니다", "Tap max lift speed (mm/s)": "떼는 최대 속도(mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "뗄 때 손가락이 거의 멈춰 있어야 합니다. 튕기기는 더 빠릅니다", "Double tap window (ms)": "두 번 탭 간격(ms)",
+    "Advanced": "고급", "Mute scrolling from N fingers": "N개 손가락부터 스크롤 끄기",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "이만큼의 손가락이 닿아 있는 동안 드라이버의 휠 에뮬레이션을 버립니다 (0 = 안 함)",
+    "Device name contains": "장치 이름에 포함",
+    "Appearance": "모양", "Theme": "테마", "System: follow the desktop's light/dark setting": "시스템: 데스크톱의 밝게/어둡게 설정을 따름",
+    "Language": "언어", "Follows your desktop language; pick one to override": "데스크톱 언어를 따릅니다. 바꾸려면 하나를 선택하세요",
+    "Daemon": "데몬", "Background service": "백그라운드 서비스", "Restart": "다시 시작", "Config file": "설정 파일",
+    "only in {app}": "{app}에서만", "No gestures yet": "아직 제스처가 없습니다", "Use + to add one": "+로 추가하세요", "Service restarted": "서비스를 다시 시작했습니다",
+    "Natural": "자연스럽게", "Inverted": "반대로", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "가로", "Vertical": "세로", "Both": "양쪽", "Auto-detect": "자동 감지", "On": "켬", "Off": "끔",
+    "Whole notches": "칸 단위", "Smooth steps": "부드럽게", "System": "시스템", "Light": "밝게", "Dark": "어둡게",
+    "Could not save: {error}": "저장할 수 없음: {error}",
+}
+
+CATALOG["vi"] = {
+    "Swipe": "Vuốt", "Tap": "Chạm", "Double tap": "Chạm đôi",
+    "Left": "Trái", "Right": "Phải", "Up": "Lên", "Down": "Xuống",
+    "Keyboard shortcut": "Phím tắt", "Toggle two shortcuts": "Chuyển đổi giữa hai phím tắt", "Cycle through shortcuts": "Xoay vòng các phím tắt",
+    "Mouse button": "Nút chuột", "Run command": "Chạy lệnh",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "VD: super+w, ctrl+alt+right, hoặc chuỗi: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "Kích hoạt thứ nhất (on), VD: ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Các bước cách nhau bằng ; VD: ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right hoặc middle", "shell command, e.g. notify-send hi": "lệnh shell, VD: notify-send hi",
+    "Direction": "Hướng", "Only for swipes": "Chỉ cho vuốt", "System language": "Ngôn ngữ hệ thống",
+    "Shortcut: {value}": "Phím tắt: {value}", "Toggle: {on}  ⇄  {off}": "Chuyển đổi: {on}  ⇄  {off}", "Cycle: {steps}": "Xoay vòng: {steps}",
+    "Click: {button}": "Nhấp: {button}", "Run: {command}": "Chạy: {command}",
+    "{kind} · {n} finger": "{kind} · {n} ngón", "{kind} · {n} fingers": "{kind} · {n} ngón",
+    "Gesture": "Cử chỉ", "Cancel": "Hủy", "Save": "Lưu", "Trigger": "Kích hoạt", "Type": "Loại", "Fingers": "Số ngón",
+    "Action": "Hành động", "Do": "Thực hiện", "Second trigger (off), e.g. ctrl+0": "Kích hoạt thứ hai (off), VD: ctrl+0", "Scope": "Phạm vi",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Để trống cho mọi ứng dụng. Nếu không, quy tắc chỉ chạy khi id ứng dụng của cửa sổ đang chọn chứa văn bản này (VD: firefox). Cần COSMIC, KDE, Sway hoặc Hyprland.",
+    "Only in app": "Chỉ trong ứng dụng", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Vuốt không gian làm việc", "Continuous swipe that follows your fingers using the desktop's native animation.": "Vuốt liên tục theo ngón tay với hoạt ảnh gốc của máy tính.",
+    "Enabled": "Bật", "Fingers on the mouse": "Số ngón trên chuột",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Tự nhiên: vuốt trái để sang không gian làm việc kế tiếp (kiểu macOS)",
+    "Sensitivity": "Độ nhạy", "Higher = less finger travel per workspace": "Cao hơn = ngón tay di chuyển ít hơn cho mỗi không gian làm việc",
+    "Activation distance (mm)": "Khoảng cách kích hoạt (mm)", "Finger travel before a swipe starts": "Quãng ngón tay di chuyển trước khi vuốt bắt đầu",
+    "Desktop gesture fingers": "Số ngón của cử chỉ máy tính", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Số ngón máy tính mong đợi cho vuốt không gian làm việc: 4 với COSMIC, 3 với GNOME",
+    "Axis": "Trục", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Hướng máy tính sắp xếp không gian làm việc. Cả hai: khóa theo hướng đầu tiên và để máy tính quyết định (GNOME: dọc = tổng quan)",
+    "Desktop touchpad natural scrolling": "Cuộn tự nhiên bàn di chuột của máy tính", "Leave on Auto unless the swipe goes the wrong way": "Để Tự động trừ khi vuốt đi sai hướng",
+    "Pinch zoom": "Thu phóng chụm", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Hai ngón tách ra hoặc chụm lại trở thành cử chỉ chụm gốc của máy tính.",
+    "1.0 = same zoom as a touchpad": "1.0 = thu phóng như bàn di chuột", "Change in finger distance before a pinch starts": "Thay đổi khoảng cách ngón tay trước khi chụm bắt đầu",
+    "Scrolling": "Cuộn", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "Cuộn một ngón thường bắt đầu bằng cú nhảy ngắn sai hướng khi đầu ngón tay đặt xuống vỏ chuột.",
+    "Filter the backwards jump": "Lọc cú nhảy ngược", "Hold the first wheel events until the direction is clear": "Giữ các sự kiện bánh xe đầu tiên cho tới khi rõ hướng",
+    "Movement before scrolling starts": "Chuyển động trước khi cuộn bắt đầu", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "Theo đơn vị bánh xe, 120 = một nấc; tăng nếu cuộn vẫn bắt đầu ngược, giảm nếu bắt đầu muộn",
+    "Mode": "Chế độ", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Nấc nguyên là cảm giác bánh xe cổ điển; mượt thì tinh hơn nhưng nhanh hơn trong terminal",
+    "Speed": "Tốc độ", "Multiplier on scroll distance": "Hệ số nhân khoảng cách cuộn",
+    "Gestures": "Cử chỉ", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Chạm và vuốt nhanh kích hoạt một hành động một lần, tùy chọn chỉ trong một ứng dụng.",
+    "Tap timing": "Thời gian chạm", "Tap max duration (ms)": "Thời lượng chạm tối đa (ms)", "Tap max movement (mm)": "Di chuyển chạm tối đa (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "Đầu ngón tay lăn 7-13 mm trên bề mặt cong", "Tap max lift speed (mm/s)": "Tốc độ nhấc tối đa (mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "Ngón tay phải gần như đứng yên khi nhấc; búng thì nhanh hơn", "Double tap window (ms)": "Khoảng chạm đôi (ms)",
+    "Advanced": "Nâng cao", "Mute scrolling from N fingers": "Tắt cuộn từ N ngón",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Bỏ giả lập bánh xe của trình điều khiển khi có từng này ngón chạm (0 = không bao giờ)",
+    "Device name contains": "Tên thiết bị chứa",
+    "Appearance": "Giao diện", "Theme": "Chủ đề", "System: follow the desktop's light/dark setting": "Hệ thống: theo thiết lập sáng/tối của máy tính",
+    "Language": "Ngôn ngữ", "Follows your desktop language; pick one to override": "Theo ngôn ngữ máy tính; chọn một để ghi đè",
+    "Daemon": "Daemon", "Background service": "Dịch vụ nền", "Restart": "Khởi động lại", "Config file": "Tệp cấu hình",
+    "only in {app}": "chỉ trong {app}", "No gestures yet": "Chưa có cử chỉ", "Use + to add one": "Dùng + để thêm", "Service restarted": "Đã khởi động lại dịch vụ",
+    "Natural": "Tự nhiên", "Inverted": "Đảo ngược", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Ngang", "Vertical": "Dọc", "Both": "Cả hai", "Auto-detect": "Tự phát hiện", "On": "Bật", "Off": "Tắt",
+    "Whole notches": "Nấc nguyên", "Smooth steps": "Bước mượt", "System": "Hệ thống", "Light": "Sáng", "Dark": "Tối",
+    "Could not save: {error}": "Không thể lưu: {error}",
+}
+
+CATALOG["id"] = {
+    "Swipe": "Geser", "Tap": "Ketuk", "Double tap": "Ketuk dua kali",
+    "Left": "Kiri", "Right": "Kanan", "Up": "Atas", "Down": "Bawah",
+    "Keyboard shortcut": "Pintasan keyboard", "Toggle two shortcuts": "Bergantian dua pintasan", "Cycle through shortcuts": "Putar beberapa pintasan",
+    "Mouse button": "Tombol mouse", "Run command": "Jalankan perintah",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "mis. super+w, ctrl+alt+right, atau urutan: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "Pemicu pertama (on), mis. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "Langkah dipisah ; mis. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right, atau middle", "shell command, e.g. notify-send hi": "perintah shell, mis. notify-send hai",
+    "Direction": "Arah", "Only for swipes": "Hanya untuk gesekan", "System language": "Bahasa sistem",
+    "Shortcut: {value}": "Pintasan: {value}", "Toggle: {on}  ⇄  {off}": "Bergantian: {on}  ⇄  {off}", "Cycle: {steps}": "Putaran: {steps}",
+    "Click: {button}": "Klik: {button}", "Run: {command}": "Jalankan: {command}",
+    "{kind} · {n} finger": "{kind} · {n} jari", "{kind} · {n} fingers": "{kind} · {n} jari",
+    "Gesture": "Gestur", "Cancel": "Batal", "Save": "Simpan", "Trigger": "Pemicu", "Type": "Jenis", "Fingers": "Jari",
+    "Action": "Aksi", "Do": "Lakukan", "Second trigger (off), e.g. ctrl+0": "Pemicu kedua (off), mis. ctrl+0", "Scope": "Cakupan",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "Kosongkan untuk semua aplikasi. Jika tidak, aturan hanya aktif saat id aplikasi jendela yang fokus memuat teks ini (mis. firefox). Perlu COSMIC, KDE, Sway, atau Hyprland.",
+    "Only in app": "Hanya di aplikasi", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "Geser ruang kerja", "Continuous swipe that follows your fingers using the desktop's native animation.": "Gesekan berkelanjutan yang mengikuti jari dengan animasi asli desktop.",
+    "Enabled": "Aktif", "Fingers on the mouse": "Jari di mouse",
+    "Natural: swipe left to go to the next workspace (macOS style)": "Alami: geser ke kiri untuk ke ruang kerja berikutnya (gaya macOS)",
+    "Sensitivity": "Sensitivitas", "Higher = less finger travel per workspace": "Lebih tinggi = jari bergerak lebih sedikit per ruang kerja",
+    "Activation distance (mm)": "Jarak aktivasi (mm)", "Finger travel before a swipe starts": "Jarak gerak jari sebelum gesekan dimulai",
+    "Desktop gesture fingers": "Jari gestur desktop", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "Jumlah jari yang diharapkan desktop untuk geser ruang kerja: 4 untuk COSMIC, 3 untuk GNOME",
+    "Axis": "Sumbu", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "Arah desktop menyusun ruang kerja. Keduanya: kunci ke arah pertama dan biarkan desktop memutuskan (GNOME: vertikal = ikhtisar)",
+    "Desktop touchpad natural scrolling": "Gulir alami touchpad desktop", "Leave on Auto unless the swipe goes the wrong way": "Biarkan Otomatis kecuali gesekan ke arah yang salah",
+    "Pinch zoom": "Zoom cubit", "Two fingers moving apart or together become the desktop's native pinch gesture.": "Dua jari yang merenggang atau merapat menjadi gestur cubit asli desktop.",
+    "1.0 = same zoom as a touchpad": "1.0 = zoom sama seperti touchpad", "Change in finger distance before a pinch starts": "Perubahan jarak jari sebelum cubitan dimulai",
+    "Scrolling": "Gulir", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "Gulir satu jari sering dimulai dengan lompatan pendek ke arah yang salah saat ujung jari mendarat di cangkang.",
+    "Filter the backwards jump": "Saring lompatan mundur", "Hold the first wheel events until the direction is clear": "Tahan event roda pertama sampai arahnya jelas",
+    "Movement before scrolling starts": "Gerakan sebelum gulir dimulai", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "Dalam satuan roda, 120 = satu takik; naikkan jika gulir masih mulai mundur, turunkan jika mulai terlambat",
+    "Mode": "Mode", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "Takik penuh adalah rasa roda klasik; halus lebih presisi tapi lebih cepat di terminal",
+    "Speed": "Kecepatan", "Multiplier on scroll distance": "Pengali jarak gulir",
+    "Gestures": "Gestur", "Taps and quick swipes that trigger an action once, optionally only in one app.": "Ketukan dan gesekan cepat yang memicu satu aksi sekali, opsional hanya di satu aplikasi.",
+    "Tap timing": "Pewaktuan ketuk", "Tap max duration (ms)": "Durasi ketuk maks (ms)", "Tap max movement (mm)": "Gerakan ketuk maks (mm)",
+    "Fingertips roll 7-13 mm on the curved surface": "Ujung jari berguling 7-13 mm di permukaan lengkung", "Tap max lift speed (mm/s)": "Kecepatan angkat maks (mm/s)",
+    "Finger must be nearly still when it lifts; flicks are faster": "Jari harus hampir diam saat diangkat; jentikan lebih cepat", "Double tap window (ms)": "Jendela ketuk dua kali (ms)",
+    "Advanced": "Lanjutan", "Mute scrolling from N fingers": "Bisukan gulir mulai N jari",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "Buang emulasi roda gulir driver saat sebanyak ini jari menyentuh (0 = tidak pernah)",
+    "Device name contains": "Nama perangkat memuat",
+    "Appearance": "Tampilan", "Theme": "Tema", "System: follow the desktop's light/dark setting": "Sistem: ikuti pengaturan terang/gelap desktop",
+    "Language": "Bahasa", "Follows your desktop language; pick one to override": "Mengikuti bahasa desktop; pilih satu untuk menimpa",
+    "Daemon": "Daemon", "Background service": "Layanan latar belakang", "Restart": "Mulai ulang", "Config file": "Berkas konfigurasi",
+    "only in {app}": "hanya di {app}", "No gestures yet": "Belum ada gestur", "Use + to add one": "Gunakan + untuk menambah", "Service restarted": "Layanan dimulai ulang",
+    "Natural": "Alami", "Inverted": "Terbalik", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "Horizontal", "Vertical": "Vertikal", "Both": "Keduanya", "Auto-detect": "Deteksi otomatis", "On": "Nyala", "Off": "Mati",
+    "Whole notches": "Takik penuh", "Smooth steps": "Langkah halus", "System": "Sistem", "Light": "Terang", "Dark": "Gelap",
+    "Could not save: {error}": "Tidak dapat menyimpan: {error}",
+}
+
+CATALOG["th"] = {
+    "Swipe": "ปัด", "Tap": "แตะ", "Double tap": "แตะสองครั้ง",
+    "Left": "ซ้าย", "Right": "ขวา", "Up": "ขึ้น", "Down": "ลง",
+    "Keyboard shortcut": "คีย์ลัด", "Toggle two shortcuts": "สลับระหว่างคีย์ลัดสองชุด", "Cycle through shortcuts": "วนรอบคีย์ลัด",
+    "Mouse button": "ปุ่มเมาส์", "Run command": "รันคำสั่ง",
+    "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal": "เช่น super+w, ctrl+alt+right หรือลำดับ: ctrl+equal,ctrl+equal",
+    "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus": "ตัวกระตุ้นแรก (on) เช่น ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
+    "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0": "ขั้นตอนคั่นด้วย ; เช่น ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
+    "left, right or middle": "left, right หรือ middle", "shell command, e.g. notify-send hi": "คำสั่งเชลล์ เช่น notify-send hi",
+    "Direction": "ทิศทาง", "Only for swipes": "เฉพาะการปัด", "System language": "ภาษาของระบบ",
+    "Shortcut: {value}": "คีย์ลัด: {value}", "Toggle: {on}  ⇄  {off}": "สลับ: {on}  ⇄  {off}", "Cycle: {steps}": "วนรอบ: {steps}",
+    "Click: {button}": "คลิก: {button}", "Run: {command}": "รัน: {command}",
+    "{kind} · {n} finger": "{kind} · {n} นิ้ว", "{kind} · {n} fingers": "{kind} · {n} นิ้ว",
+    "Gesture": "ท่าทาง", "Cancel": "ยกเลิก", "Save": "บันทึก", "Trigger": "ตัวกระตุ้น", "Type": "ชนิด", "Fingers": "จำนวนนิ้ว",
+    "Action": "การกระทำ", "Do": "ทำ", "Second trigger (off), e.g. ctrl+0": "ตัวกระตุ้นที่สอง (off) เช่น ctrl+0", "Scope": "ขอบเขต",
+    "Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.": "เว้นว่างเพื่อใช้กับทุกแอป มิฉะนั้นกฎจะทำงานเฉพาะเมื่อ id แอปของหน้าต่างที่โฟกัสมีข้อความนี้ (เช่น firefox) ต้องใช้ COSMIC, KDE, Sway หรือ Hyprland",
+    "Only in app": "เฉพาะในแอป", "MouseTouch": "MouseTouch",
+    "Workspace swipe": "ปัดพื้นที่ทำงาน", "Continuous swipe that follows your fingers using the desktop's native animation.": "การปัดต่อเนื่องที่ตามนิ้วของคุณด้วยแอนิเมชันเนทีฟของเดสก์ท็อป",
+    "Enabled": "เปิดใช้", "Fingers on the mouse": "จำนวนนิ้วบนเมาส์",
+    "Natural: swipe left to go to the next workspace (macOS style)": "ธรรมชาติ: ปัดซ้ายเพื่อไปพื้นที่ทำงานถัดไป (แบบ macOS)",
+    "Sensitivity": "ความไว", "Higher = less finger travel per workspace": "ยิ่งสูง = นิ้วเคลื่อนน้อยลงต่อหนึ่งพื้นที่ทำงาน",
+    "Activation distance (mm)": "ระยะเริ่มทำงาน (มม.)", "Finger travel before a swipe starts": "ระยะที่นิ้วเคลื่อนก่อนการปัดเริ่ม",
+    "Desktop gesture fingers": "จำนวนนิ้วของท่าทางเดสก์ท็อป", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME": "จำนวนนิ้วที่เดสก์ท็อปต้องการสำหรับปัดพื้นที่ทำงาน: 4 สำหรับ COSMIC, 3 สำหรับ GNOME",
+    "Axis": "แกน", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)": "ทิศทางที่เดสก์ท็อปจัดเรียงพื้นที่ทำงาน ทั้งสอง: ล็อกตามทิศทางแรกแล้วให้เดสก์ท็อปตัดสิน (GNOME: แนวตั้ง = ภาพรวม)",
+    "Desktop touchpad natural scrolling": "การเลื่อนธรรมชาติของทัชแพดเดสก์ท็อป", "Leave on Auto unless the swipe goes the wrong way": "ปล่อยเป็นอัตโนมัติ เว้นแต่การปัดไปผิดทาง",
+    "Pinch zoom": "ซูมบีบนิ้ว", "Two fingers moving apart or together become the desktop's native pinch gesture.": "สองนิ้วที่กางออกหรือหุบเข้ากลายเป็นท่าทางบีบนิ้วเนทีฟของเดสก์ท็อป",
+    "1.0 = same zoom as a touchpad": "1.0 = ซูมเท่ากับทัชแพด", "Change in finger distance before a pinch starts": "ระยะห่างนิ้วที่เปลี่ยนก่อนการบีบเริ่ม",
+    "Scrolling": "การเลื่อน", "One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.": "การเลื่อนด้วยนิ้วเดียวมักเริ่มด้วยการกระโดดสั้นๆ ผิดทางขณะปลายนิ้วแตะลงบนตัวเมาส์",
+    "Filter the backwards jump": "กรองการกระโดดถอยหลัง", "Hold the first wheel events until the direction is clear": "พักเหตุการณ์ล้อแรกๆ จนกว่าทิศทางจะชัดเจน",
+    "Movement before scrolling starts": "การเคลื่อนที่ก่อนเริ่มเลื่อน", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late": "ในหน่วยล้อ 120 = หนึ่งขั้น เพิ่มหากการเลื่อนยังเริ่มถอยหลัง ลดหากเริ่มช้า",
+    "Mode": "โหมด", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals": "เป็นขั้นคือความรู้สึกล้อแบบคลาสสิก ลื่นจะละเอียดกว่าแต่เร็วกว่าในเทอร์มินัล",
+    "Speed": "ความเร็ว", "Multiplier on scroll distance": "ตัวคูณระยะเลื่อน",
+    "Gestures": "ท่าทาง", "Taps and quick swipes that trigger an action once, optionally only in one app.": "การแตะและปัดเร็วที่สั่งการกระทำหนึ่งครั้ง เลือกให้ใช้กับแอปเดียวได้",
+    "Tap timing": "จังหวะการแตะ", "Tap max duration (ms)": "ระยะเวลาแตะสูงสุด (มิลลิวินาที)", "Tap max movement (mm)": "การเคลื่อนที่ขณะแตะสูงสุด (มม.)",
+    "Fingertips roll 7-13 mm on the curved surface": "ปลายนิ้วกลิ้ง 7-13 มม. บนพื้นผิวโค้ง", "Tap max lift speed (mm/s)": "ความเร็วยกนิ้วสูงสุด (มม./วินาที)",
+    "Finger must be nearly still when it lifts; flicks are faster": "นิ้วต้องแทบไม่ขยับตอนยก การสะบัดจะเร็วกว่า", "Double tap window (ms)": "ช่วงเวลาแตะสองครั้ง (มิลลิวินาที)",
+    "Advanced": "ขั้นสูง", "Mute scrolling from N fingers": "ปิดการเลื่อนตั้งแต่ N นิ้ว",
+    "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)": "ทิ้งการจำลองล้อเลื่อนของไดรเวอร์ขณะมีนิ้วแตะจำนวนนี้ (0 = ไม่ทิ้ง)",
+    "Device name contains": "ชื่ออุปกรณ์มีคำว่า",
+    "Appearance": "รูปลักษณ์", "Theme": "ธีม", "System: follow the desktop's light/dark setting": "ระบบ: ตามการตั้งค่าสว่าง/มืดของเดสก์ท็อป",
+    "Language": "ภาษา", "Follows your desktop language; pick one to override": "ตามภาษาของเดสก์ท็อป เลือกภาษาเพื่อกำหนดเอง",
+    "Daemon": "ดีมอน", "Background service": "บริการเบื้องหลัง", "Restart": "รีสตาร์ต", "Config file": "ไฟล์ตั้งค่า",
+    "only in {app}": "เฉพาะใน {app}", "No gestures yet": "ยังไม่มีท่าทาง", "Use + to add one": "กด + เพื่อเพิ่ม", "Service restarted": "รีสตาร์ตบริการแล้ว",
+    "Natural": "ธรรมชาติ", "Inverted": "กลับด้าน", "4 (COSMIC, KDE)": "4 (COSMIC, KDE)", "3 (GNOME)": "3 (GNOME)",
+    "Horizontal": "แนวนอน", "Vertical": "แนวตั้ง", "Both": "ทั้งสอง", "Auto-detect": "ตรวจหาอัตโนมัติ", "On": "เปิด", "Off": "ปิด",
+    "Whole notches": "เป็นขั้น", "Smooth steps": "ขั้นแบบลื่น", "System": "ระบบ", "Light": "สว่าง", "Dark": "มืด",
+    "Could not save: {error}": "บันทึกไม่ได้: {error}",
+}
 
 DEFAULTS = {
     "general": {"device_match": "Magic Mouse", "suppress_scroll_from_fingers": 2},
@@ -42,16 +1225,28 @@ DEFAULTS = {
     ],
 }
 
-KINDS = [("swipe", "Swipe"), ("tap", "Tap"), ("double_tap", "Double tap")]
-DIRS = [("left", "Left"), ("right", "Right"), ("up", "Up"), ("down", "Down")]
-ACTIONS = [("key", "Keyboard shortcut"), ("toggle", "Toggle two shortcuts"), ("cycle", "Cycle through shortcuts"), ("button", "Mouse button"), ("command", "Run command")]
-ACTION_HINT = {
-    "key": "e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal",
-    "toggle": "First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus",
-    "cycle": "Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0",
-    "button": "left, right or middle",
-    "command": "shell command, e.g. notify-send hi",
-}
+
+def KINDS():
+    return [("swipe", _("Swipe")), ("tap", _("Tap")), ("double_tap", _("Double tap"))]
+
+
+def DIRS():
+    return [("left", _("Left")), ("right", _("Right")), ("up", _("Up")), ("down", _("Down"))]
+
+
+def ACTIONS():
+    return [("key", _("Keyboard shortcut")), ("toggle", _("Toggle two shortcuts")), ("cycle", _("Cycle through shortcuts")),
+            ("button", _("Mouse button")), ("command", _("Run command"))]
+
+
+def ACTION_HINT(t):
+    return {
+        "key": _("e.g. super+w, ctrl+alt+right, or a sequence: ctrl+equal,ctrl+equal"),
+        "toggle": _("First trigger (on), e.g. ctrl+kpplus,ctrl+kpplus,ctrl+kpplus"),
+        "cycle": _("Steps separated by ; e.g. ctrl+kpplus,ctrl+kpplus ; ctrl+kpplus ; ctrl+0"),
+        "button": _("left, right or middle"),
+        "command": _("shell command, e.g. notify-send hi"),
+    }[t]
 
 
 # ---------------------------------------------------------------------------
@@ -124,26 +1319,26 @@ def save_config(cfg: dict) -> None:
 def describe_action(a: dict) -> str:
     t = a.get("type")
     if t == "key":
-        return f"Shortcut: {a.get('combo', '')}"
+        return _("Shortcut: {value}").format(value=a.get("combo", ""))
     if t == "toggle":
-        return f"Toggle: {a.get('on', '')}  ⇄  {a.get('off', '')}"
+        return _("Toggle: {on}  ⇄  {off}").format(on=a.get("on", ""), off=a.get("off", ""))
     if t == "cycle":
-        return "Cycle: " + "  →  ".join(a.get("steps", []))
+        return _("Cycle: {steps}").format(steps="  →  ".join(a.get("steps", [])))
     if t == "button":
-        return f"Click: {a.get('button', '')}"
+        return _("Click: {button}").format(button=a.get("button", ""))
     if t == "command":
-        return f"Run: {a.get('command', '')}"
+        return _("Run: {command}").format(command=a.get("command", ""))
     return str(a)
 
 
 def describe_gesture(g: dict) -> str:
-    kind = dict(KINDS).get(g["kind"], g["kind"])
+    kind = dict(KINDS()).get(g["kind"], g["kind"])
     n = int(g["fingers"])
-    s = f"{kind} · {n} finger{'s' if n != 1 else ''}"
+    s = (_("{kind} · {n} finger") if n == 1 else _("{kind} · {n} fingers")).format(kind=kind, n=n)
     if g["kind"] == "swipe" and g.get("direction"):
-        s += f" · {g['direction']}"
+        s += " · " + dict(DIRS()).get(g["direction"], g["direction"])
     if g.get("app"):
-        s += f" · only in {g['app']}"
+        s += " · " + _("only in {app}").format(app=g["app"])
     return s
 
 
@@ -160,11 +1355,14 @@ def service_status() -> tuple[str, bool]:
 # Widgets
 # ---------------------------------------------------------------------------
 
-def combo_row(title, subtitle, options, current, on_change):
+def combo_row(title, subtitle, options, current, on_change, searchable=False):
     row = Adw.ComboRow(title=title, subtitle=subtitle or "")
-    model = Gtk.StringList.new([label for _, label in options])
+    model = Gtk.StringList.new([label for _k, label in options])
     row.set_model(model)
-    keys = [k for k, _ in options]
+    if searchable:
+        row.set_expression(Gtk.PropertyExpression.new(Gtk.StringObject, None, "string"))
+        row.set_enable_search(True)
+    keys = [k for k, _l in options]
     row.set_selected(keys.index(current) if current in keys else 0)
     row.connect("notify::selected", lambda r, _p: on_change(keys[r.get_selected()]))
     return row
@@ -188,16 +1386,16 @@ class GestureDialog(Adw.Dialog):
     """Add or edit one discrete gesture rule."""
 
     def __init__(self, gesture: dict | None, on_done):
-        super().__init__(title="Gesture", content_width=420)
+        super().__init__(title=_("Gesture"), content_width=420)
         self.g = dict(gesture) if gesture else {"kind": "tap", "fingers": 3, "enabled": True, "action": {"type": "key", "combo": ""}}
         self.g["action"] = dict(self.g["action"])
         self.on_done = on_done
 
         tb = Adw.ToolbarView()
         header = Adw.HeaderBar()
-        cancel = Gtk.Button(label="Cancel")
-        cancel.connect("clicked", lambda *_: self.close())
-        save = Gtk.Button(label="Save", css_classes=["suggested-action"])
+        cancel = Gtk.Button(label=_("Cancel"))
+        cancel.connect("clicked", lambda *_a: self.close())
+        save = Gtk.Button(label=_("Save"), css_classes=["suggested-action"])
         save.connect("clicked", self._save)
         header.pack_start(cancel)
         header.pack_end(save)
@@ -206,29 +1404,29 @@ class GestureDialog(Adw.Dialog):
         tb.add_top_bar(header)
 
         page = Adw.PreferencesPage()
-        grp = Adw.PreferencesGroup(title="Trigger")
-        grp.add(combo_row("Type", None, KINDS, self.g["kind"], self._set_kind))
-        grp.add(spin_row("Fingers", None, int(self.g["fingers"]), 1, 5, 1, 0, lambda v: self.g.__setitem__("fingers", v)))
-        self.dir_row = combo_row("Direction", "Only for swipes", DIRS, self.g.get("direction") or "left",
+        grp = Adw.PreferencesGroup(title=_("Trigger"))
+        grp.add(combo_row(_("Type"), None, KINDS(), self.g["kind"], self._set_kind))
+        grp.add(spin_row(_("Fingers"), None, int(self.g["fingers"]), 1, 5, 1, 0, lambda v: self.g.__setitem__("fingers", v)))
+        self.dir_row = combo_row(_("Direction"), _("Only for swipes"), DIRS(), self.g.get("direction") or "left",
                                  lambda v: self.g.__setitem__("direction", v))
         self.dir_row.set_visible(self.g["kind"] == "swipe")
         grp.add(self.dir_row)
         page.add(grp)
 
-        grp = Adw.PreferencesGroup(title="Action")
-        grp.add(combo_row("Do", None, ACTIONS, self.g["action"]["type"], self._set_action_type))
-        self.value_row = Adw.EntryRow(title=ACTION_HINT[self.g["action"]["type"]])
+        grp = Adw.PreferencesGroup(title=_("Action"))
+        grp.add(combo_row(_("Do"), None, ACTIONS(), self.g["action"]["type"], self._set_action_type))
+        self.value_row = Adw.EntryRow(title=ACTION_HINT(self.g["action"]["type"]))
         self.value_row.set_text(self._action_value())
         grp.add(self.value_row)
-        self.off_row = Adw.EntryRow(title="Second trigger (off), e.g. ctrl+0")
+        self.off_row = Adw.EntryRow(title=_("Second trigger (off), e.g. ctrl+0"))
         self.off_row.set_text(self.g["action"].get("off", ""))
         self.off_row.set_visible(self.g["action"]["type"] == "toggle")
         grp.add(self.off_row)
         page.add(grp)
 
-        grp = Adw.PreferencesGroup(title="Scope",
-                                   description="Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland.")
-        self.app_row = Adw.EntryRow(title="Only in app")
+        grp = Adw.PreferencesGroup(title=_("Scope"),
+                                   description=_("Leave empty for every app. Otherwise the rule only fires when the focused window's app id contains this text (e.g. firefox). Needs COSMIC, KDE, Sway or Hyprland."))
+        self.app_row = Adw.EntryRow(title=_("Only in app"))
         self.app_row.set_text(self.g.get("app") or "")
         grp.add(self.app_row)
         page.add(grp)
@@ -249,10 +1447,10 @@ class GestureDialog(Adw.Dialog):
 
     def _set_action_type(self, t):
         self.g["action"] = {"type": t}
-        self.value_row.set_title(ACTION_HINT[t])
+        self.value_row.set_title(ACTION_HINT(t))
         self.off_row.set_visible(t == "toggle")
 
-    def _save(self, *_):
+    def _save(self, *_a):
         t = self.g["action"]["type"]
         key = {"key": "combo", "toggle": "on", "cycle": "steps", "button": "button", "command": "command"}[t]
         value = self.value_row.get_text().strip()
@@ -281,7 +1479,8 @@ class GestureDialog(Adw.Dialog):
 
 class Window(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="MouseTouch", default_width=560, default_height=720)
+        super().__init__(application=app, title=_("MouseTouch"), default_width=560, default_height=720)
+        self.app = app
         self.cfg = load_config()
         self._save_id = 0
 
@@ -294,94 +1493,107 @@ class Window(Adw.ApplicationWindow):
         self.set_content(tb)
 
         ws = self.cfg["workspace_swipe"]
-        grp = Adw.PreferencesGroup(title="Workspace swipe",
-                                   description="Continuous swipe that follows your fingers using the desktop's native animation.")
-        grp.add(switch_row("Enabled", None, ws["enabled"], lambda v: self._set("workspace_swipe", "enabled", v)))
-        grp.add(spin_row("Fingers on the mouse", None, ws["fingers"], 1, 4, 1, 0, lambda v: self._set("workspace_swipe", "fingers", v)))
-        grp.add(combo_row("Direction", "Natural: swipe left to go to the next workspace (macOS style)",
-                          [("natural", "Natural"), ("inverted", "Inverted")], ws["direction"],
+        grp = Adw.PreferencesGroup(title=_("Workspace swipe"),
+                                   description=_("Continuous swipe that follows your fingers using the desktop's native animation."))
+        grp.add(switch_row(_("Enabled"), None, ws["enabled"], lambda v: self._set("workspace_swipe", "enabled", v)))
+        grp.add(spin_row(_("Fingers on the mouse"), None, ws["fingers"], 1, 4, 1, 0, lambda v: self._set("workspace_swipe", "fingers", v)))
+        grp.add(combo_row(_("Direction"), _("Natural: swipe left to go to the next workspace (macOS style)"),
+                          [("natural", _("Natural")), ("inverted", _("Inverted"))], ws["direction"],
                           lambda v: self._set("workspace_swipe", "direction", v)))
-        grp.add(spin_row("Sensitivity", "Higher = less finger travel per workspace", ws["sensitivity"], 0.05, 3.0, 0.05, 2,
+        grp.add(spin_row(_("Sensitivity"), _("Higher = less finger travel per workspace"), ws["sensitivity"], 0.05, 3.0, 0.05, 2,
                          lambda v: self._set("workspace_swipe", "sensitivity", v)))
-        grp.add(spin_row("Activation distance (mm)", "Finger travel before a swipe starts", ws["activation_mm"], 0.5, 15.0, 0.5, 1,
+        grp.add(spin_row(_("Activation distance (mm)"), _("Finger travel before a swipe starts"), ws["activation_mm"], 0.5, 15.0, 0.5, 1,
                          lambda v: self._set("workspace_swipe", "activation_mm", v)))
-        grp.add(combo_row("Desktop gesture fingers", "Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME",
-                          [("4", "4 (COSMIC, KDE)"), ("3", "3 (GNOME)")], str(ws["synthetic_fingers"]),
+        grp.add(combo_row(_("Desktop gesture fingers"), _("Fingers the desktop expects for a workspace swipe: 4 for COSMIC, 3 for GNOME"),
+                          [("4", _("4 (COSMIC, KDE)")), ("3", _("3 (GNOME)"))], str(ws["synthetic_fingers"]),
                           lambda v: self._set("workspace_swipe", "synthetic_fingers", int(v))))
-        grp.add(combo_row("Axis", "Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)",
-                          [("horizontal", "Horizontal"), ("vertical", "Vertical"), ("both", "Both")], ws["axis"],
+        grp.add(combo_row(_("Axis"), _("Direction your desktop arranges workspaces in. Both: lock to the first direction and let the desktop decide (GNOME: vertical = overview)"),
+                          [("horizontal", _("Horizontal")), ("vertical", _("Vertical")), ("both", _("Both"))], ws["axis"],
                           lambda v: self._set("workspace_swipe", "axis", v)))
         cns = ws.get("compositor_natural_scroll")
-        grp.add(combo_row("Desktop touchpad natural scrolling", "Leave on Auto unless the swipe goes the wrong way",
-                          [("auto", "Auto-detect"), ("true", "On"), ("false", "Off")],
+        grp.add(combo_row(_("Desktop touchpad natural scrolling"), _("Leave on Auto unless the swipe goes the wrong way"),
+                          [("auto", _("Auto-detect")), ("true", _("On")), ("false", _("Off"))],
                           "auto" if cns is None else str(cns).lower(),
                           lambda v: self._set("workspace_swipe", "compositor_natural_scroll", None if v == "auto" else v == "true")))
         page.add(grp)
 
         pz = self.cfg["pinch"]
-        grp = Adw.PreferencesGroup(title="Pinch zoom", description="Two fingers moving apart or together become the desktop's native pinch gesture.")
-        grp.add(switch_row("Enabled", None, pz["enabled"], lambda v: self._set("pinch", "enabled", v)))
-        grp.add(spin_row("Sensitivity", "1.0 = same zoom as a touchpad", pz["sensitivity"], 0.2, 4.0, 0.1, 1,
+        grp = Adw.PreferencesGroup(title=_("Pinch zoom"), description=_("Two fingers moving apart or together become the desktop's native pinch gesture."))
+        grp.add(switch_row(_("Enabled"), None, pz["enabled"], lambda v: self._set("pinch", "enabled", v)))
+        grp.add(spin_row(_("Sensitivity"), _("1.0 = same zoom as a touchpad"), pz["sensitivity"], 0.2, 4.0, 0.1, 1,
                          lambda v: self._set("pinch", "sensitivity", v)))
-        grp.add(spin_row("Activation distance (mm)", "Change in finger distance before a pinch starts", pz["activation_mm"], 0.5, 15.0, 0.5, 1,
+        grp.add(spin_row(_("Activation distance (mm)"), _("Change in finger distance before a pinch starts"), pz["activation_mm"], 0.5, 15.0, 0.5, 1,
                          lambda v: self._set("pinch", "activation_mm", v)))
         page.add(grp)
 
         sc = self.cfg["scroll"]
-        grp = Adw.PreferencesGroup(title="Scrolling", description="One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell.")
-        grp.add(switch_row("Filter the backwards jump", "Hold the first wheel events until the direction is clear", sc["direction_debounce"],
+        grp = Adw.PreferencesGroup(title=_("Scrolling"), description=_("One-finger scrolling often starts with a short jump the wrong way while the fingertip settles on the shell."))
+        grp.add(switch_row(_("Filter the backwards jump"), _("Hold the first wheel events until the direction is clear"), sc["direction_debounce"],
                            lambda v: self._set("scroll", "direction_debounce", v)))
-        grp.add(spin_row("Movement before scrolling starts", "In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late",
+        grp.add(spin_row(_("Movement before scrolling starts"), _("In wheel units, 120 = one notch; raise if a scroll still starts backwards, lower if it starts late"),
                          sc["debounce_units"], 12, 600, 12, 0, lambda v: self._set("scroll", "debounce_units", int(v))))
-        grp.add(combo_row("Mode", "Whole notches is the classic wheel feel; smooth is finer but faster in terminals",
-                          [("notches", "Whole notches"), ("smooth", "Smooth steps")], sc.get("mode", "notches"),
+        grp.add(combo_row(_("Mode"), _("Whole notches is the classic wheel feel; smooth is finer but faster in terminals"),
+                          [("notches", _("Whole notches")), ("smooth", _("Smooth steps"))], sc.get("mode", "notches"),
                           lambda v: self._set("scroll", "mode", v)))
-        grp.add(spin_row("Speed", "Multiplier on scroll distance", sc.get("speed", 1.0), 0.2, 4.0, 0.1, 1,
+        grp.add(spin_row(_("Speed"), _("Multiplier on scroll distance"), sc.get("speed", 1.0), 0.2, 4.0, 0.1, 1,
                          lambda v: self._set("scroll", "speed", v)))
         page.add(grp)
 
-        self.gest_group = Adw.PreferencesGroup(title="Gestures", description="Taps and quick swipes that trigger an action once, optionally only in one app.")
+        self.gest_group = Adw.PreferencesGroup(title=_("Gestures"), description=_("Taps and quick swipes that trigger an action once, optionally only in one app."))
         add = Gtk.Button(icon_name="list-add-symbolic", valign=Gtk.Align.CENTER, css_classes=["flat"])
-        add.connect("clicked", lambda *_: self._edit_gesture(None))
+        add.connect("clicked", lambda *_a: self._edit_gesture(None))
         self.gest_group.set_header_suffix(add)
         self.gest_rows = []
         self._rebuild_gestures()
         page.add(self.gest_group)
 
         taps = self.cfg["taps"]
-        grp = Adw.PreferencesGroup(title="Tap timing")
-        grp.add(spin_row("Tap max duration (ms)", None, taps["tap_max_ms"], 50, 1000, 10, 0, lambda v: self._set("taps", "tap_max_ms", v)))
-        grp.add(spin_row("Tap max movement (mm)", "Fingertips roll 7-13 mm on the curved surface", taps["tap_max_mm"], 0.5, 30, 0.5, 1, lambda v: self._set("taps", "tap_max_mm", v)))
-        grp.add(spin_row("Tap max lift speed (mm/s)", "Finger must be nearly still when it lifts; flicks are faster", taps["tap_max_lift_speed"], 10, 400, 10, 0, lambda v: self._set("taps", "tap_max_lift_speed", v)))
-        grp.add(spin_row("Double tap window (ms)", None, taps["double_tap_ms"], 100, 1000, 10, 0, lambda v: self._set("taps", "double_tap_ms", v)))
+        grp = Adw.PreferencesGroup(title=_("Tap timing"))
+        grp.add(spin_row(_("Tap max duration (ms)"), None, taps["tap_max_ms"], 50, 1000, 10, 0, lambda v: self._set("taps", "tap_max_ms", v)))
+        grp.add(spin_row(_("Tap max movement (mm)"), _("Fingertips roll 7-13 mm on the curved surface"), taps["tap_max_mm"], 0.5, 30, 0.5, 1, lambda v: self._set("taps", "tap_max_mm", v)))
+        grp.add(spin_row(_("Tap max lift speed (mm/s)"), _("Finger must be nearly still when it lifts; flicks are faster"), taps["tap_max_lift_speed"], 10, 400, 10, 0, lambda v: self._set("taps", "tap_max_lift_speed", v)))
+        grp.add(spin_row(_("Double tap window (ms)"), None, taps["double_tap_ms"], 100, 1000, 10, 0, lambda v: self._set("taps", "double_tap_ms", v)))
         page.add(grp)
 
         gen = self.cfg["general"]
-        grp = Adw.PreferencesGroup(title="Advanced")
-        grp.add(spin_row("Mute scrolling from N fingers", "Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)",
+        grp = Adw.PreferencesGroup(title=_("Advanced"))
+        grp.add(spin_row(_("Mute scrolling from N fingers"), _("Drop the driver's scroll-wheel emulation while this many fingers touch (0 = never)"),
                          gen["suppress_scroll_from_fingers"], 0, 5, 1, 0, lambda v: self._set("general", "suppress_scroll_from_fingers", v)))
-        dm = Adw.EntryRow(title="Device name contains")
+        dm = Adw.EntryRow(title=_("Device name contains"))
         dm.set_text(gen["device_match"])
         dm.connect("apply", lambda r: self._set("general", "device_match", r.get_text().strip() or "Magic Mouse"))
         dm.set_show_apply_button(True)
         grp.add(dm)
         page.add(grp)
 
-        grp = Adw.PreferencesGroup(title="Daemon")
-        self.status_row = Adw.ActionRow(title="Background service")
+        # Appearance: theme and language. "System" follows the desktop; an
+        # explicit choice is remembered in ui.toml.
+        grp = Adw.PreferencesGroup(title=_("Appearance"))
+        grp.add(combo_row(_("Theme"), _("System: follow the desktop's light/dark setting"),
+                          [("system", _("System")), ("light", _("Light")), ("dark", _("Dark"))], PREFS["theme"], self._set_theme))
+        sys_code = system_lang()
+        sys_label = next((f"{_('System language')} · {flag} {name}" for code, flag, name in LANGS if code == sys_code), _("System language"))
+        lang_options = [("system", sys_label)] + [(code, f"{flag} {name}") for code, flag, name in LANGS]
+        grp.add(combo_row(_("Language"), _("Follows your desktop language; pick one to override"), lang_options, PREFS["language"],
+                          self._set_language, searchable=True))
+        page.add(grp)
+
+        grp = Adw.PreferencesGroup(title=_("Daemon"))
+        self.status_row = Adw.ActionRow(title=_("Background service"))
         self.status_icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
         self.status_row.add_prefix(self.status_icon)
-        restart = Gtk.Button(label="Restart", valign=Gtk.Align.CENTER)
+        restart = Gtk.Button(label=_("Restart"), valign=Gtk.Align.CENTER)
         restart.connect("clicked", self._restart)
         self.status_row.add_suffix(restart)
         grp.add(self.status_row)
-        open_row = Adw.ActionRow(title="Config file", subtitle=str(CONFIG_PATH), activatable=True)
+        open_row = Adw.ActionRow(title=_("Config file"), subtitle=str(CONFIG_PATH), activatable=True)
         open_row.add_suffix(Gtk.Image.new_from_icon_name("document-open-symbolic"))
-        open_row.connect("activated", lambda *_: Gio.AppInfo.launch_default_for_uri(CONFIG_PATH.as_uri(), None))
+        open_row.connect("activated", lambda *_a: Gio.AppInfo.launch_default_for_uri(CONFIG_PATH.as_uri(), None))
         grp.add(open_row)
         page.add(grp)
         self._refresh_status()
-        GLib.timeout_add_seconds(5, self._refresh_status)
+        self._status_timer = GLib.timeout_add_seconds(5, self._refresh_status)
+        self.connect("close-request", lambda *_a: GLib.source_remove(self._status_timer) and False)
 
     # -- state -----------------------------------------------------------
     def _set(self, section, key, value):
@@ -401,8 +1613,36 @@ class Window(Adw.ApplicationWindow):
         try:
             save_config(self.cfg)
         except Exception as e:  # noqa: BLE001
-            self.toast.add_toast(Adw.Toast(title=f"Could not save: {e}"))
+            self.toast.add_toast(Adw.Toast(title=_("Could not save: {error}").format(error=e)))
         return False
+
+    # -- appearance ------------------------------------------------------
+    def _set_theme(self, theme):
+        if theme == PREFS["theme"]:
+            return
+        PREFS["theme"] = theme
+        apply_theme(theme)
+        self._save_prefs()
+
+    def _set_language(self, code):
+        global LANG
+        if code == PREFS["language"]:
+            return
+        PREFS["language"] = code
+        LANG = system_lang() if code == "system" else code
+        self._save_prefs()
+        # Every label comes from _(), so the simplest way to relabel is to
+        # rebuild the window (unsaved config edits are flushed first).
+        if self._save_id:
+            GLib.source_remove(self._save_id)
+            self._do_save()
+        self.app.rebuild_window(self)
+
+    def _save_prefs(self):
+        try:
+            save_ui_prefs(PREFS)
+        except Exception as e:  # noqa: BLE001
+            self.toast.add_toast(Adw.Toast(title=_("Could not save: {error}").format(error=e)))
 
     # -- gestures --------------------------------------------------------
     def _rebuild_gestures(self):
@@ -421,7 +1661,7 @@ class Window(Adw.ApplicationWindow):
             self.gest_group.add(row)
             self.gest_rows.append(row)
         if not self.cfg["gesture"]:
-            row = Adw.ActionRow(title="No gestures yet", subtitle="Use + to add one")
+            row = Adw.ActionRow(title=_("No gestures yet"), subtitle=_("Use + to add one"))
             self.gest_group.add(row)
             self.gest_rows.append(row)
 
@@ -454,10 +1694,10 @@ class Window(Adw.ApplicationWindow):
         self.status_icon.set_from_icon_name("emblem-ok-symbolic" if ok else "dialog-warning-symbolic")
         return True
 
-    def _restart(self, *_):
+    def _restart(self, *_a):
         subprocess.run(["systemctl", "--user", "restart", SERVICE], check=False)
         GLib.timeout_add(800, self._refresh_status)
-        self.toast.add_toast(Adw.Toast(title="Service restarted"))
+        self.toast.add_toast(Adw.Toast(title=_("Service restarted")))
 
 
 class App(Adw.Application):
@@ -468,8 +1708,17 @@ class App(Adw.Application):
         Gtk.Window.set_default_icon_name(APP_ID)
 
     def do_activate(self):
+        apply_theme(PREFS["theme"])
         win = self.props.active_window or Window(self)
         win.present()
+
+    def rebuild_window(self, old: Window) -> None:
+        """Replace the window after a language change (same size and position)."""
+        w, h = old.get_default_size()
+        new = Window(self)
+        new.set_default_size(w, h)
+        new.present()
+        old.close()
 
 
 if __name__ == "__main__":

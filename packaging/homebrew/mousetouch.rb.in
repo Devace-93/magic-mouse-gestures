@@ -19,8 +19,8 @@ class Mousetouch < Formula
 
   def install
     bin.install "mousetouch", "mousetouch-settings"
-    (share/"applications").install "net.3m4.MouseTouch.desktop"
-    (share/"icons/hicolor/scalable/apps").install "net.3m4.MouseTouch.svg"
+    (share/"applications").install "io.github.Devace_93.MouseTouch.desktop"
+    (share/"icons/hicolor/scalable/apps").install "io.github.Devace_93.MouseTouch.svg"
     pkgshare.install "60-mousetouch.rules", "mousetouch.conf"
     doc.install "README.md"
   end

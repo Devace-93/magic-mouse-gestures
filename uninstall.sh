@@ -4,7 +4,7 @@ set -euo pipefail
 PREFIX=${PREFIX:-/usr/local}
 systemctl --user disable --now mousetouch.service 2>/dev/null || true
 sudo rm -f "$PREFIX/bin/mousetouch" "$PREFIX/bin/mousetouch-settings" \
-  "$PREFIX/share/applications/net.3m4.MouseTouch.desktop" "$PREFIX/share/icons/hicolor/scalable/apps/net.3m4.MouseTouch.svg" \
+  "$PREFIX/share/applications/io.github.Devace_93.MouseTouch.desktop" "$PREFIX/share/icons/hicolor/scalable/apps/io.github.Devace_93.MouseTouch.svg" \
   /etc/udev/rules.d/60-mousetouch.rules /etc/modules-load.d/mousetouch.conf \
   /etc/systemd/user/mousetouch.service
 sudo udevadm control --reload-rules

@@ -66,7 +66,7 @@ jobs:
           mkdir -p "$stage"
           cp target/release/mousetouch ui/mousetouch-settings "$stage/"
           cp packaging/60-mousetouch.rules packaging/mousetouch.conf \
-             packaging/mousetouch.service packaging/net.3m4.MouseTouch.desktop packaging/net.3m4.MouseTouch.svg \
+             packaging/mousetouch.service packaging/io.github.Devace_93.MouseTouch.desktop packaging/io.github.Devace_93.MouseTouch.svg \
              README.md LICENSE "$stage/"
           tar czf "dist/$stage.tar.gz" "$stage"
           # Native packages (the runner's architecture matches the target).
