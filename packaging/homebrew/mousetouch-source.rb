@@ -39,11 +39,10 @@ class Mousetouch < Formula
       Then start it in the background:
         brew services start mousetouch
       The settings app needs python3-gi, python3-gi-cairo, GTK 4 and libadwaita from
-      your distribution. Desktops do not look in Homebrew's share/applications or
-      share/icons, so add a user entry once to get it in the app menu (absolute
-      paths, since the launcher has neither Homebrew's bin nor its icons on its path):
-        mkdir -p ~/.local/share/applications
-        sed -e "s|^Exec=.*|Exec=#{opt_bin}/mousetouch-settings|" -e "s|^Icon=.*|Icon=#{opt_share}/icons/hicolor/scalable/apps/io.github.Devace_93.MouseTouch.svg|" #{opt_share}/applications/io.github.Devace_93.MouseTouch.desktop > ~/.local/share/applications/io.github.Devace_93.MouseTouch.desktop
+      your distribution. Desktops do not look in Homebrew's share directory, so the
+      daemon adds the app-menu entry itself the first time the service starts
+      (~/.local/share/applications/io.github.Devace_93.MouseTouch.desktop; delete it
+      after `brew uninstall`).
     EOS
   end
 

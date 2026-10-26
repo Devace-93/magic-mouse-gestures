@@ -9,6 +9,7 @@
 
 mod bluetooth;
 mod config;
+mod desktop;
 mod engine;
 mod focus;
 mod hidraw;
@@ -166,6 +167,9 @@ fn run(config_path: &Path) -> Result<()> {
     log::info!("compositor touchpad natural scroll: {compositor_natural}");
     let focus = focus::spawn();
     let monitor = monitor::Monitor::start();
+    // Homebrew installs are outside the desktop's search path; add the
+    // settings app to the app menu from here (no-op elsewhere).
+    desktop::ensure_app_menu_entry();
 
     let active: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
     let mut last_mtime = std::fs::metadata(config_path).and_then(|m| m.modified()).ok();
