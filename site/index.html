@@ -302,7 +302,8 @@ systemctl --user enable --now mousetouch</code></pre>
       </div>
       <div class="panel-tab" data-tab="brew">
         <p data-i18n="brewP">Homebrew on Linux. The formula ships the binaries; follow the printed caveats to install the udev rule once (needs sudo), then start the service.</p>
-        <pre><code>brew install Devace-93/tap/mousetouch
+        <pre><code>brew trust Devace-93/tap   # once; recent Homebrew asks this for third-party taps
+brew install Devace-93/tap/mousetouch
 brew services start mousetouch</code></pre>
       </div>
       <div class="panel-tab" data-tab="nix">
