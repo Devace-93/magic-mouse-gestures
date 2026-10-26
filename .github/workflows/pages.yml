@@ -5,10 +5,7 @@ name: Pages
 
 on:
   push:
-    # `landing-page` is a bootstrap trigger so the site is live before the
-    # branch reaches main (main is protected, so the workflow could not be
-    # registered there first). Drop it once this file is on main.
-    branches: [main, landing-page]
+    branches: [main]
     paths: ["site/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
