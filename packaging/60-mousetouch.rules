@@ -1,4 +1,4 @@
-# magic-mouse-gestures: let the logged-in user open the Magic Mouse's input
+# mousetouch: let the logged-in user open the Magic Mouse's input
 # and raw HID nodes, and create virtual devices through uinput.
 KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
 SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="*Magic Mouse*", TAG+="uaccess"

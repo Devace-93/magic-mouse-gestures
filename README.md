@@ -1,7 +1,13 @@
-# magic-mouse-gestures
+# mousetouch
 
 Native-feeling multitouch gestures for the Apple Magic Mouse on Linux
 (Wayland), implemented as a small userspace driver.
+
+Website: <https://mouse.3m4.net>
+
+> MouseTouch is an independent open-source project. It is not affiliated with,
+> endorsed by or sponsored by Apple Inc. "Magic Mouse" is a trademark of Apple
+> Inc., used here only to describe the hardware the driver works with.
 
 Out of the box:
 
@@ -14,8 +20,8 @@ Out of the box:
 | 1-finger scroll, clicks    | Unchanged, except the backwards jump a scroll often starts with is filtered out |
 
 Extra taps and swipes (3 fingers, vertical swipes, ...) can be mapped to
-shortcuts, mouse buttons or commands in the config file, optionally only for
-a given application (e.g. 2-finger swipes = back/forward in the browser).
+shortcuts, mouse buttons or commands from the settings app, optionally only
+for a given application (e.g. 2-finger swipes = back/forward in the browser).
 
 ## How it works
 
@@ -54,26 +60,73 @@ KDE, niri, ...).
 
 ## Install
 
-Requirements: Rust toolchain (to build), `/dev/uinput` (standard), the
-`hid-magicmouse` kernel module (in-tree; a DKMS version also works).
+Requirements: `/dev/uinput` (standard), the `hid-magicmouse` kernel module
+(in-tree; the DKMS version also works), systemd. The settings app also needs
+`python3-gi`, GTK 4 and libadwaita (`python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`
+on Debian/Ubuntu/Pop!_OS).
+
+**One line, any distro** (picks the `.deb`/`.rpm` or the static binary, verifies
+the checksum, needs sudo):
 
 ```sh
-git clone https://github.com/Devace-93/magic-mouse-gestures
-cd magic-mouse-gestures
+curl -fsSL https://raw.githubusercontent.com/Devace-93/mousetouch/main/get.sh | sh
+```
+
+**Packages** from the [releases page](https://github.com/Devace-93/mousetouch/releases):
+
+| Distro | Command |
+|---|---|
+| Debian, Ubuntu, Pop!_OS | `sudo apt install ./mousetouch_<version>_amd64.deb` (or `_arm64`) |
+| Fedora, openSUSE | `sudo dnf install ./mousetouch-<version>.x86_64.rpm` |
+| Arch | AUR: `yay -S mousetouch-git` |
+| Homebrew on Linux | `brew install Devace-93/tap/mousetouch`, then follow the printed caveats for the udev rule |
+| NixOS / Nix | `nix profile install github:Devace-93/mousetouch`, or import `nixosModules.default` and set `services.mousetouch.enable = true` |
+| Rust toolchain | `cargo install mousetouch` (binary only; install the udev rule from `packaging/` by hand) |
+| Any, static tarball | `mousetouch-<version>-<arch>-linux.tar.gz` contains the binary, the settings app and the files `get.sh` installs |
+
+The `.deb` and `.rpm` enable the per-user service for everyone and start it
+for users logged in at install time; other methods print the
+`systemctl --user enable --now mousetouch` step.
+
+**From source:**
+
+```sh
+git clone https://github.com/Devace-93/mousetouch
+cd mousetouch
 ./install.sh
 ```
 
 `install.sh` builds the binary, installs it to `/usr/local/bin`, adds a udev
 rule granting the logged-in user access to the mouse's input and hidraw nodes
-and to `/dev/uinput`, and enables a per-user systemd service. Remove everything with `./uninstall.sh`.
+and to `/dev/uinput`, installs the settings app, and enables a per-user systemd
+service. Remove everything with `./uninstall.sh`.
 
 If the Magic Mouse was paired before the udev rule was installed, unplug/re-
 pair it or run `sudo udevadm trigger` once.
 
 ## Configure
 
-The daemon writes a default `~/.config/magic-mouse-gestures/config.toml` on
-first start and reloads it whenever it changes.
+Run **MouseTouch** from the app menu, or
+`mousetouch-settings`. Settings are saved to
+`~/.config/mousetouch/config.toml` and the daemon reloads them
+instantly.
+
+The app follows the desktop's light/dark theme and language by default. Both
+can be overridden in its *Appearance* group (34 locales, the same list as the
+3m4.net pages); the choice is stored in `~/.config/mousetouch/ui.toml`, which
+the daemon never reads.
+
+- **Direction** — *Natural* (macOS-like, swipe left = next workspace) or
+  *Inverted*. The daemon accounts for your desktop's touchpad natural-scroll
+  setting automatically.
+- **Sensitivity** — finger travel per workspace.
+- **Desktop gesture fingers** — 4 for COSMIC/KDE, 3 for GNOME.
+- **Pinch zoom** — on/off and zoom aggressiveness.
+- **Gestures** — add rows like *Tap · 3 fingers → Click middle* or
+  *Swipe · 2 fingers · right · only in firefox → alt+left*.
+
+The same options exist in the TOML file:
+
 
 - **Direction** — *Natural* (macOS-like, swipe left = next workspace) or
   *Inverted*. The daemon accounts for your desktop's touchpad natural-scroll
@@ -157,10 +210,10 @@ vertical one opens the overview, both with GNOME's own animation.
 ## Troubleshooting
 
 ```sh
-magic-mouse-gestures probe          # is the mouse seen, with touch axes?
-magic-mouse-gestures watch          # live finger positions
-magic-mouse-gestures demo-swipe left 40   # replay a synthetic 4-finger swipe
-journalctl --user -fu magic-mouse-gestures
+mousetouch probe          # is the mouse seen, with touch axes?
+mousetouch watch          # live finger positions
+mousetouch demo-swipe left 40   # replay a synthetic 4-finger swipe
+journalctl --user -fu mousetouch
 ```
 
 - *No device found*: the mouse must be connected over **Bluetooth** (the
@@ -181,13 +234,15 @@ journalctl --user -fu magic-mouse-gestures
 
 ```sh
 cargo build --release
-./target/release/magic-mouse-gestures -v run
+./target/release/mousetouch -v run
+./ui/mousetouch-settings
 ```
 
 Layout: `src/main.rs` (device discovery, event loop), `src/engine.rs`
 (gesture recognition), `src/hidraw.rs` (HID report decoding), `src/focus.rs`
 (focused-app tracking over Wayland), `src/virt.rs` (uinput devices),
-`src/config.rs`, `packaging/` (systemd unit, udev rule).
+`src/config.rs`, `ui/` (GTK4/libadwaita settings), `packaging/` (systemd unit,
+udev rule, desktop file).
 
 ## Related work
 
@@ -196,7 +251,7 @@ Other people have attacked the same problem; worth a look to compare approaches:
 - [Salacfrantisek/magic-mouse-wayland-gestures](https://github.com/Salacfrantisek/magic-mouse-wayland-gestures)
   independently uses the same idea (hidraw in, gesture-only virtual touchpad
   out) for GNOME, and adds one-finger scroll shaping and two-finger pinch zoom.
-- [brenoperucchi/magic-mouse-gestures](https://github.com/brenoperucchi/magic-mouse-gestures)
+- [brenoperucchi/mousetouch](https://github.com/brenoperucchi/mousetouch)
   reads hidraw and maps two-finger swipes to keystrokes (`wtype`).
 - [isomoes/mouse-gesture](https://github.com/isomoes/mouse-gesture) is a Rust
   evdev recognizer for the USB-C model with `xdotool` actions (X11).

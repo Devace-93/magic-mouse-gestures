@@ -1,11 +1,11 @@
 [Unit]
-Description=Magic Mouse gestures daemon (userspace driver)
-Documentation=https://github.com/Devace-93/magic-mouse-gestures
+Description=MouseTouch: Magic Mouse gestures daemon (userspace driver)
+Documentation=https://github.com/Devace-93/mousetouch
 # Keep running across desktop sessions; the virtual devices are seat-wide.
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/magic-mouse-gestures run
+ExecStart=/usr/bin/env mousetouch run
 Restart=on-failure
 RestartSec=2
 Nice=-5

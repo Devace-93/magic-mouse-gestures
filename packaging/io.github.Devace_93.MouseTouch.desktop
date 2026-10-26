@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=MouseTouch
+Comment=Configure Magic Mouse workspace swipes, pinch and tap gestures
+Exec=mousetouch-settings
+Icon=io.github.Devace_93.MouseTouch
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=mouse;gesture;touch;workspace;magic;

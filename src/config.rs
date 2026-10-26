@@ -1,5 +1,5 @@
 //! Configuration model. Stored as TOML in
-//! `$XDG_CONFIG_HOME/magic-mouse-gestures/config.toml`.
+//! `$XDG_CONFIG_HOME/mousetouch/config.toml`.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -299,7 +299,7 @@ pub fn default_path() -> PathBuf {
             let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/".into());
             home.join(".config")
         });
-    base.join("magic-mouse-gestures").join("config.toml")
+    base.join("mousetouch").join("config.toml")
 }
 
 pub fn load(path: &Path) -> Result<Config> {
@@ -325,8 +325,8 @@ pub fn load_or_create(path: &Path) -> Result<Config> {
 pub fn to_toml(cfg: &Config) -> Result<String> {
     let body = toml::to_string_pretty(cfg)?;
     Ok(format!(
-        "# magic-mouse-gestures configuration\n\
-         # Edit by hand; the daemon reloads it on save.\n\n{body}"
+        "# mousetouch configuration\n\
+         # Edit by hand or with `mousetouch-settings`. The daemon reloads on save.\n\n{body}"
     ))
 }
 
