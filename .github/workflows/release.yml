@@ -109,7 +109,7 @@ jobs:
           generate_release_notes: true
 
       - name: Update the Homebrew tap
-        if: env.HOMEBREW_TAP_TOKEN != ''
+        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
