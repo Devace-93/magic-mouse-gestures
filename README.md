@@ -62,8 +62,8 @@ KDE, niri, ...).
 
 Requirements: `/dev/uinput` (standard), the `hid-magicmouse` kernel module
 (in-tree; the DKMS version also works), systemd. The settings app also needs
-`python3-gi`, GTK 4 and libadwaita (`python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`
-on Debian/Ubuntu/Pop!_OS).
+`python3-gi` with its cairo bridge, GTK 4 and libadwaita (`python3-gi
+python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1` on Debian/Ubuntu/Pop!_OS).
 
 **One line, any distro** (picks the `.deb`/`.rpm` or the static binary, verifies
 the checksum, needs sudo):
@@ -124,6 +124,27 @@ the daemon never reads.
 - **Pinch zoom** — on/off and zoom aggressiveness.
 - **Gestures** — add rows like *Tap · 3 fingers → Click middle* or
   *Swipe · 2 fingers · right · only in firefox → alt+left*.
+
+### Live view
+
+The top of the settings window draws the mouse as the daemon sees it: every
+finger with its number, where it landed and the path it took, the workspace
+swipe or pinch being replayed (arrow with the travel in mm, or the zoom
+factor), scroll notches, clicks, and a badge for each tap, double tap or
+swipe with the rule it ran (or *no rule*). Touches that were not counted as
+taps say why (*moved too far*, *lifted while moving*, ...), which is the
+quickest way to tune the *Tap timing* values.
+
+The window-with-arrow button opens the same view in its own window with an
+event log, handy next to the app you are testing. Its pin button asks the
+desktop to keep that window on every workspace, so it stays put while
+workspaces slide past; this uses COSMIC's toplevel-management protocol and
+only works where the compositor advertises it (other desktops: use the
+window menu, e.g. GNOME *Always on Visible Workspace*, KDE *All Desktops*).
+
+The data comes from the daemon's event stream on
+`$XDG_RUNTIME_DIR/mousetouch.sock` (newline-delimited JSON, see
+`src/monitor.rs`); `mousetouch events` prints it in a terminal.
 
 The same options exist in the TOML file:
 
@@ -211,13 +232,25 @@ vertical one opens the overview, both with GNOME's own animation.
 
 ```sh
 mousetouch probe          # is the mouse seen, with touch axes?
-mousetouch watch          # live finger positions
+mousetouch watch          # live finger positions (daemon stopped)
+mousetouch events         # the running daemon's event stream as JSON lines
 mousetouch demo-swipe left 40   # replay a synthetic 4-finger swipe
+mousetouch bt-check       # Bluetooth pairing healthy? (3 = stale after a Mac pairing)
+mousetouch bt-repair      # remove the mouse from BlueZ and pair it again
+mousetouch sticky list    # windows the compositor reports, and whether it can pin them
 journalctl --user -fu mousetouch
 ```
 
 - *No device found*: the mouse must be connected over **Bluetooth** (the
   Lightning cable only charges on Linux) and bound to `hid-magicmouse`.
+- *The mouse no longer connects after being paired with a Mac* (even after
+  forgetting it on both sides): BlueZ keeps a record that is *paired* but not
+  *bonded* and rejects the mouse (`journalctl -u bluetooth` says "Rejected
+  connection from !bonded device"). The settings app shows this as *Stale
+  pairing* in its Bluetooth row; press **Forget and pair again**, or run
+  `mousetouch bt-repair` and switch the mouse off and on when asked. It
+  removes the stale record, waits for the mouse, pairs, trusts and connects.
+  `mousetouch bt-check` reports the state (exit 3 = stale).
 - *Swipe goes the wrong way*: flip **Direction**, or set *Desktop touchpad
   natural scrolling* explicitly.
 - *Nothing happens on swipe*: check the desktop handles 4-finger (or
@@ -241,8 +274,15 @@ cargo build --release
 Layout: `src/main.rs` (device discovery, event loop), `src/engine.rs`
 (gesture recognition), `src/hidraw.rs` (HID report decoding), `src/focus.rs`
 (focused-app tracking over Wayland), `src/virt.rs` (uinput devices),
-`src/config.rs`, `ui/` (GTK4/libadwaita settings), `packaging/` (systemd unit,
-udev rule, desktop file).
+`src/monitor.rs` (event stream for the live view), `src/sticky.rs` (pin a
+window on every workspace, COSMIC), `src/bluetooth.rs` (pairing check and
+repair through bluetoothctl), `src/config.rs`, `ui/` (GTK4/libadwaita
+settings with the live view), `packaging/` (systemd unit, udev rule, desktop
+file).
+
+To exercise the daemon without hardware: `mousetouch fake-mouse all` creates
+a fake Magic Mouse over uinput and plays a swipe, a pinch and a double tap
+through it (`MOUSETOUCH_FAKE_NAME` renames it so only a test config matches).
 
 ## Related work
 

@@ -5,6 +5,7 @@
 use crate::config::{Action, Axis, Config, Direction, GestureKind, SwipeDir};
 use crate::focus::Focus;
 use crate::hidraw::RawTouch;
+use crate::monitor::{Event as Mon, Finger, Monitor};
 use crate::scroll::ScrollGate;
 use crate::virt::{VirtualKeyboard, VirtualMouse, VirtualTouchpad};
 use anyhow::Result;
@@ -81,6 +82,10 @@ struct Session {
     gestured: bool,
     /// A physical button was pressed while fingers were down: not a tap.
     clicked: bool,
+    /// Travel forwarded to the virtual touchpad so far (mm), for the live view.
+    pad: (f64, f64),
+    /// Pinch ratio replayed so far, for the live view.
+    scale: f64,
 }
 
 struct PendingTap {
@@ -121,9 +126,12 @@ pub struct Engine {
     scroll: ScrollGate,
     /// Scratch buffer for events the gate releases.
     scroll_out: Vec<InputEvent>,
+    /// Live event stream for the settings app (see monitor.rs).
+    monitor: Monitor,
 }
 
 impl Engine {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cfg: Arc<RwLock<Config>>,
         shared: Arc<Mutex<Shared>>,
@@ -132,6 +140,7 @@ impl Engine {
         ay: AxisInfo,
         compositor_natural: bool,
         focus: Focus,
+        monitor: Monitor,
     ) -> Self {
         Self {
             cfg,
@@ -155,6 +164,7 @@ impl Engine {
             hidraw_mode: false,
             scroll: ScrollGate::new(),
             scroll_out: Vec::new(),
+            monitor,
         }
     }
 
@@ -224,6 +234,19 @@ impl Engine {
                     }
                     self.scroll_out.clear();
                     self.scroll.feed(ev, &cfg.scroll, &mut self.scroll_out);
+                    if self.monitor.active() {
+                        let (mut dx, mut dy) = (0, 0);
+                        for e in &self.scroll_out {
+                            match RelativeAxisCode(e.code()) {
+                                RelativeAxisCode::REL_WHEEL_HI_RES => dy += e.value(),
+                                RelativeAxisCode::REL_HWHEEL_HI_RES => dx += e.value(),
+                                _ => {}
+                            }
+                        }
+                        if dx != 0 || dy != 0 {
+                            self.monitor.send(&Mon::Scroll { ms: self.monitor.now_ms(), dx, dy });
+                        }
+                    }
                     for e in self.scroll_out.drain(..) {
                         self.mouse.push(e);
                     }
@@ -237,6 +260,17 @@ impl Engine {
                     if let Some(s) = &mut self.session {
                         s.clicked = true;
                     }
+                }
+                if self.monitor.active() && ev.value() != 2 && (0x100..0x160).contains(&ev.code()) {
+                    let button = match ev.code() {
+                        0x110 => "left",
+                        0x111 => "right",
+                        0x112 => "middle",
+                        0x113 => "side",
+                        0x114 => "extra",
+                        _ => "other",
+                    };
+                    self.monitor.send(&Mon::Button { ms: self.monitor.now_ms(), button, down: ev.value() == 1 });
                 }
                 self.mouse.push(ev)
             }
@@ -357,6 +391,7 @@ impl Engine {
             if let Some(s) = self.session.take() {
                 if matches!(s.swipe, SwipeState::Workspace { .. } | SwipeState::Pinch { .. }) {
                     self.shared.lock().unwrap().touchpad.end()?;
+                    self.monitor_gesture_end(&s.swipe);
                 }
                 // Lift speed measured up to the lift itself: a finger that
                 // rested a while before leaving (no new samples, since the
@@ -388,6 +423,28 @@ impl Engine {
                     s.max_fingers, dur.as_millis(), self.last_travel, self.last_speed,
                     reason.map_or("tap".to_string(), |r| format!("not a tap ({r})"))
                 );
+                if self.monitor.active() {
+                    let ms = self.monitor.now_ms();
+                    self.monitor.send(&Mon::TouchEnd {
+                        ms,
+                        fingers: s.max_fingers,
+                        duration_ms: dur.as_millis() as u64,
+                        travel_mm: self.last_travel,
+                        lift_speed: self.last_speed,
+                        tap: is_tap,
+                        reason,
+                    });
+                    self.monitor.send(&Mon::Frame {
+                        ms,
+                        fingers: Vec::new(),
+                        state: "idle",
+                        max_fingers: s.max_fingers,
+                        travel_mm: 0.0,
+                        pad_dx: None,
+                        pad_dy: None,
+                        scale: None,
+                    });
+                }
                 if is_tap {
                     self.register_tap(s.max_fingers, now, Duration::from_millis(taps.double_tap_ms))?;
                 }
@@ -433,6 +490,8 @@ impl Engine {
                 swipe: SwipeState::Armed,
                 gestured: false,
                 clicked: false,
+                pad: (0.0, 0.0),
+                scale: 1.0,
             },
             Some(s) => s,
         };
@@ -441,6 +500,7 @@ impl Engine {
             // Finger count changed: close any running swipe and re-arm.
             if matches!(session.swipe, SwipeState::Workspace { .. } | SwipeState::Pinch { .. }) {
                 self.shared.lock().unwrap().touchpad.end()?;
+                self.monitor_gesture_end(&session.swipe);
             }
             session.count = n;
             session.max_fingers = session.max_fingers.max(n);
@@ -448,6 +508,8 @@ impl Engine {
             session.sep_anchor = spread;
             session.last_centroid = c;
             session.swipe = SwipeState::Armed;
+            session.pad = (0.0, 0.0);
+            session.scale = 1.0;
         }
 
         match session.swipe {
@@ -462,12 +524,15 @@ impl Engine {
                 };
                 if vx != 0.0 || vy != 0.0 {
                     self.shared.lock().unwrap().touchpad.move_by(vx, vy)?;
+                    session.pad.0 += vx;
+                    session.pad.1 += vy;
                 }
             }
             SwipeState::Pinch { sep0, origin } => {
                 let sens = self.cfg.read().unwrap().pinch.sensitivity;
                 let positions = pinch_positions(origin, c, session.anchor, sep0, spread, sens);
                 self.shared.lock().unwrap().touchpad.move_to(&positions)?;
+                session.scale = (spread.max(0.5) / sep0.max(0.5)).powf(sens);
             }
             SwipeState::Armed => {
                 let dx = c.0 - session.anchor.0;
@@ -489,7 +554,9 @@ impl Engine {
                     drop(sh);
                     session.gestured = true;
                     session.swipe = SwipeState::Pinch { sep0, origin };
+                    session.scale = (spread.max(0.5) / sep0.max(0.5)).powf(pinch.sensitivity);
                     log::debug!("pinch begin: {n} fingers, spread {sep0:.1} -> {spread:.1} mm");
+                    self.monitor_gesture_begin("pinch", n, None);
                 } else if dist >= ws.activation_mm {
                     let dir = if dx.abs() >= dy.abs() {
                         if dx > 0.0 { SwipeDir::Right } else { SwipeDir::Left }
@@ -523,7 +590,9 @@ impl Engine {
                         sh.touchpad.move_by(vx, vy)?;
                         drop(sh);
                         session.swipe = SwipeState::Workspace { sign, axis };
+                        session.pad = (vx, vy);
                         log::debug!("workspace swipe begin: {n} fingers, dir {dir:?}");
+                        self.monitor_gesture_begin("workspace_swipe", n, Some(dir));
                     } else {
                         // Nothing to do with this motion; a short touch may
                         // still end as a tap (fingertips drift when tapping).
@@ -534,9 +603,60 @@ impl Engine {
             SwipeState::Done => {}
         }
 
+        if self.monitor.active() {
+            self.send_frame(&session, travel);
+        }
         session.last_centroid = c;
         self.session = Some(session);
         Ok(())
+    }
+
+    // -- live event stream -------------------------------------------------
+
+    fn send_frame(&self, session: &Session, travel: f64) {
+        let fingers = self
+            .slots
+            .iter()
+            .flatten()
+            .map(|t| Finger {
+                id: t.id,
+                x: self.ax.to_mm(t.x),
+                y: self.ay.to_mm(t.y),
+                x0: self.ax.to_mm(t.start_x),
+                y0: self.ay.to_mm(t.start_y),
+            })
+            .collect();
+        let (pad, scale) = match session.swipe {
+            SwipeState::Workspace { .. } => (Some(session.pad), None),
+            SwipeState::Pinch { .. } => (None, Some(session.scale)),
+            _ => (None, None),
+        };
+        self.monitor.send(&Mon::Frame {
+            ms: self.monitor.now_ms(),
+            fingers,
+            state: state_name(&session.swipe),
+            max_fingers: session.max_fingers,
+            travel_mm: travel,
+            pad_dx: pad.map(|p| p.0),
+            pad_dy: pad.map(|p| p.1),
+            scale,
+        });
+    }
+
+    fn monitor_gesture_begin(&self, gesture: &'static str, fingers: usize, dir: Option<SwipeDir>) {
+        if self.monitor.active() {
+            self.monitor.send(&Mon::GestureBegin { ms: self.monitor.now_ms(), gesture, fingers, dir: dir.map(dir_name) });
+        }
+    }
+
+    fn monitor_gesture_end(&self, swipe: &SwipeState) {
+        if self.monitor.active() {
+            let gesture = match swipe {
+                SwipeState::Pinch { .. } => "pinch",
+                _ => "workspace_swipe",
+            };
+            self.monitor.send(&Mon::GestureEnd { ms: self.monitor.now_ms(), gesture });
+        }
     }
 
     fn register_tap(&mut self, fingers: usize, now: Instant, window: Duration) -> Result<()> {
@@ -580,6 +700,17 @@ impl Engine {
                 .find(|g| g.app.as_deref().map_or(false, |a| !focused.is_empty() && focused.contains(&a.to_ascii_lowercase())));
             scoped.or_else(|| candidates.find(|g| g.app.is_none())).map(|g| (g.action.clone(), g.app.clone()))
         };
+        if self.monitor.active() {
+            self.monitor.send(&Mon::Rule {
+                ms: self.monitor.now_ms(),
+                kind: kind_name(kind),
+                fingers,
+                dir: dir.map(dir_name),
+                matched: action.is_some(),
+                action: action.as_ref().map(|(a, _)| describe_action(a)),
+                app: action.as_ref().and_then(|(_, app)| app.clone()),
+            });
+        }
         let Some((action, app)) = action else { return Ok(false) };
         log::info!("gesture {kind:?} {fingers}f {dir:?} app={app:?} -> {action:?}");
         let toggle_key = format!("{kind:?}/{fingers}/{dir:?}/{app:?}@{focused}");
@@ -628,6 +759,43 @@ impl Engine {
             }
         }
         Ok(())
+    }
+}
+
+fn state_name(s: &SwipeState) -> &'static str {
+    match s {
+        SwipeState::Armed => "armed",
+        SwipeState::Workspace { .. } => "workspace",
+        SwipeState::Pinch { .. } => "pinch",
+        SwipeState::Done => "done",
+    }
+}
+
+fn dir_name(d: SwipeDir) -> &'static str {
+    match d {
+        SwipeDir::Left => "left",
+        SwipeDir::Right => "right",
+        SwipeDir::Up => "up",
+        SwipeDir::Down => "down",
+    }
+}
+
+fn kind_name(k: GestureKind) -> &'static str {
+    match k {
+        GestureKind::Swipe => "swipe",
+        GestureKind::Tap => "tap",
+        GestureKind::DoubleTap => "double_tap",
+    }
+}
+
+/// One-line description of an action for the live view.
+fn describe_action(a: &Action) -> String {
+    match a {
+        Action::Key { combo } => combo.clone(),
+        Action::Toggle { on, off } => format!("{on} ⇄ {off}"),
+        Action::Cycle { steps } => steps.join(" → "),
+        Action::Button { button } => format!("click {button}"),
+        Action::Command { command } => format!("$ {command}"),
     }
 }
 
@@ -681,7 +849,7 @@ mod tests {
         let mouse = VirtualMouse::new("Test Magic Mouse", InputId::new(BusType::BUS_BLUETOOTH, 0x4c, 0x269, 1)).unwrap();
         let ax = AxisInfo { min: -1100, max: 1258, res: 26.0 };
         let ay = AxisInfo { min: -1589, max: 2047, res: 70.0 };
-        Engine::new(cfg, shared, mouse, ax, ay, false, Arc::new(Mutex::new(None)))
+        Engine::new(cfg, shared, mouse, ax, ay, false, Arc::new(Mutex::new(None)), Monitor::disabled())
     }
 
     #[test]
