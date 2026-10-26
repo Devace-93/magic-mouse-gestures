@@ -17,6 +17,7 @@ class Mousetouch < Formula
     system "cargo", "install", *std_cargo_args
     bin.install "ui/mousetouch-settings"
     (share/"applications").install "packaging/net.3m4.MouseTouch.desktop"
+    (share/"icons/hicolor/scalable/apps").install "packaging/net.3m4.MouseTouch.svg"
     pkgshare.install "packaging/60-mousetouch.rules", "packaging/mousetouch.conf"
     doc.install "README.md"
   end

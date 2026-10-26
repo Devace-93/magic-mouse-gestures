@@ -463,6 +463,9 @@ class Window(Adw.ApplicationWindow):
 class App(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        # Wayland picks the icon from the .desktop file matching APP_ID; this
+        # covers X11/XWayland and a launch from a terminal.
+        Gtk.Window.set_default_icon_name(APP_ID)
 
     def do_activate(self):
         win = self.props.active_window or Window(self)

@@ -36,6 +36,8 @@ cargo build --release --locked
 install -Dm755 target/release/%{name} %{buildroot}%{_bindir}/%{name}
 install -Dm755 ui/%{name}-settings %{buildroot}%{_bindir}/%{name}-settings
 install -Dm644 packaging/net.3m4.MouseTouch.desktop %{buildroot}%{_datadir}/applications/net.3m4.MouseTouch.desktop
+%{_datadir}/icons/hicolor/scalable/apps/net.3m4.MouseTouch.svg
+install -Dm644 packaging/net.3m4.MouseTouch.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/net.3m4.MouseTouch.svg
 install -Dm644 packaging/60-%{name}.rules %{buildroot}%{_udevrulesdir}/60-%{name}.rules
 install -Dm644 packaging/%{name}.conf %{buildroot}%{_modulesloaddir}/%{name}.conf
 install -Dm644 packaging/%{name}.service %{buildroot}%{_userunitdir}/%{name}.service

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- MouseTouch app icon (also the glyph used on https://mouse.3m4.net). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6f6f8"/>
+      <stop offset="1" stop-color="#dcdce2"/>
+    </linearGradient>
+    <linearGradient id="touch" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2f7ff0"/>
+      <stop offset="1" stop-color="#1f6fe0"/>
+    </linearGradient>
+  </defs>
+  <!-- shadow -->
+  <rect x="31" y="12" width="66" height="108" rx="33" fill="#000" opacity="0.18" transform="translate(0 3)"/>
+  <!-- mouse body -->
+  <rect x="31" y="10" width="66" height="108" rx="33" fill="url(#body)" stroke="#303036" stroke-width="5"/>
+  <!-- touch surface arcs -->
+  <path d="M46 56c6-11 30-11 36 0" fill="none" stroke="url(#touch)" stroke-width="6" stroke-linecap="round"/>
+  <path d="M50 76c4.5-8 23.5-8 28 0" fill="none" stroke="url(#touch)" stroke-width="6" stroke-linecap="round"/>
+  <path d="M55 95c2.5-4.5 15.5-4.5 18 0" fill="none" stroke="url(#touch)" stroke-width="6" stroke-linecap="round"/>
+</svg>

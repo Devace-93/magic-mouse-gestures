@@ -19,6 +19,7 @@ echo ">> installing to $PREFIX (sudo)"
 sudo install -Dm755 "$BIN" "$PREFIX/bin/mousetouch"
 sudo install -Dm755 ui/mousetouch-settings "$PREFIX/bin/mousetouch-settings"
 sudo install -Dm644 packaging/net.3m4.MouseTouch.desktop "$PREFIX/share/applications/net.3m4.MouseTouch.desktop"
+sudo install -Dm644 packaging/net.3m4.MouseTouch.svg "$PREFIX/share/icons/hicolor/scalable/apps/net.3m4.MouseTouch.svg"
 sudo install -Dm644 packaging/60-mousetouch.rules /etc/udev/rules.d/60-mousetouch.rules
 sudo install -Dm644 packaging/mousetouch.conf /etc/modules-load.d/mousetouch.conf
 sudo install -Dm644 packaging/mousetouch.service /etc/systemd/user/mousetouch.service
@@ -26,6 +27,7 @@ sudo modprobe uinput || true
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=input --subsystem-match=misc
 command -v update-desktop-database >/dev/null && sudo update-desktop-database "$PREFIX/share/applications" || true
+command -v gtk-update-icon-cache >/dev/null && sudo gtk-update-icon-cache -q "$PREFIX/share/icons/hicolor" || true
 
 echo ">> enabling user service"
 pkill -f '^[^ ]*mousetouch run' 2>/dev/null || true   # stop any manually started instance

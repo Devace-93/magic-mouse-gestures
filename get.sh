@@ -90,6 +90,7 @@ else
     sudo_run install -Dm755 "$SRC/mousetouch" "$PREFIX/bin/mousetouch"
     sudo_run install -Dm755 "$SRC/mousetouch-settings" "$PREFIX/bin/mousetouch-settings"
     sudo_run install -Dm644 "$SRC/net.3m4.MouseTouch.desktop" "$PREFIX/share/applications/net.3m4.MouseTouch.desktop"
+    sudo_run install -Dm644 "$SRC/net.3m4.MouseTouch.svg" "$PREFIX/share/icons/hicolor/scalable/apps/net.3m4.MouseTouch.svg"
     sudo_run install -Dm644 "$SRC/60-mousetouch.rules" /etc/udev/rules.d/60-mousetouch.rules
     sudo_run install -Dm644 "$SRC/mousetouch.conf" /etc/modules-load.d/mousetouch.conf
     sudo_run install -Dm644 "$SRC/mousetouch.service" /etc/systemd/user/mousetouch.service
