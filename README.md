@@ -111,6 +111,11 @@ Run **MouseTouch** from the app menu, or
 `~/.config/mousetouch/config.toml` and the daemon reloads them
 instantly.
 
+The app follows the desktop's light/dark theme and language by default. Both
+can be overridden in its *Appearance* group (34 locales, the same list as the
+3m4.net pages); the choice is stored in `~/.config/mousetouch/ui.toml`, which
+the daemon never reads.
+
 - **Direction** — *Natural* (macOS-like, swipe left = next workspace) or
   *Inverted*. The daemon accounts for your desktop's touchpad natural-scroll
   setting automatically.

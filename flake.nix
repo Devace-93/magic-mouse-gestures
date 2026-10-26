@@ -31,8 +31,8 @@
               substituteInPlace $out/bin/mousetouch-settings \
                 --replace-fail "#!/usr/bin/python3" "#!${python}/bin/python3"
               wrapProgram $out/bin/mousetouch-settings "''${gappsWrapperArgs[@]}"
-              install -Dm644 packaging/net.3m4.MouseTouch.desktop $out/share/applications/net.3m4.MouseTouch.desktop
-              install -Dm644 packaging/net.3m4.MouseTouch.svg $out/share/icons/hicolor/scalable/apps/net.3m4.MouseTouch.svg
+              install -Dm644 packaging/io.github.Devace_93.MouseTouch.desktop $out/share/applications/io.github.Devace_93.MouseTouch.desktop
+              install -Dm644 packaging/io.github.Devace_93.MouseTouch.svg $out/share/icons/hicolor/scalable/apps/io.github.Devace_93.MouseTouch.svg
               install -Dm644 packaging/60-mousetouch.rules $out/lib/udev/rules.d/60-mousetouch.rules
               install -Dm644 packaging/mousetouch.conf $out/lib/modules-load.d/mousetouch.conf
             '';

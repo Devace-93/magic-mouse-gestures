@@ -18,8 +18,8 @@ fi
 echo ">> installing to $PREFIX (sudo)"
 sudo install -Dm755 "$BIN" "$PREFIX/bin/mousetouch"
 sudo install -Dm755 ui/mousetouch-settings "$PREFIX/bin/mousetouch-settings"
-sudo install -Dm644 packaging/net.3m4.MouseTouch.desktop "$PREFIX/share/applications/net.3m4.MouseTouch.desktop"
-sudo install -Dm644 packaging/net.3m4.MouseTouch.svg "$PREFIX/share/icons/hicolor/scalable/apps/net.3m4.MouseTouch.svg"
+sudo install -Dm644 packaging/io.github.Devace_93.MouseTouch.desktop "$PREFIX/share/applications/io.github.Devace_93.MouseTouch.desktop"
+sudo install -Dm644 packaging/io.github.Devace_93.MouseTouch.svg "$PREFIX/share/icons/hicolor/scalable/apps/io.github.Devace_93.MouseTouch.svg"
 sudo install -Dm644 packaging/60-mousetouch.rules /etc/udev/rules.d/60-mousetouch.rules
 sudo install -Dm644 packaging/mousetouch.conf /etc/modules-load.d/mousetouch.conf
 sudo install -Dm644 packaging/mousetouch.service /etc/systemd/user/mousetouch.service
