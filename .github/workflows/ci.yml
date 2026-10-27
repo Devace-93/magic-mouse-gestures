@@ -27,3 +27,4 @@ jobs:
           sh -n get.sh
           bash -n install.sh
           bash -n uninstall.sh
+          bash -n purge.sh

@@ -99,7 +99,10 @@ cd mousetouch
 `install.sh` builds the binary, installs it to `/usr/local/bin`, adds a udev
 rule granting the logged-in user access to the mouse's input and hidraw nodes
 and to `/dev/uinput`, installs the settings app, and enables a per-user systemd
-service. Remove everything with `./uninstall.sh`.
+service. Remove everything with `./uninstall.sh`. To wipe every trace from a
+machine before testing a fresh install (any install method, services, menu
+entries, config; `--keep-config` keeps your settings, `--dry-run` only lists),
+run `./purge.sh`.
 
 If the Magic Mouse was paired before the udev rule was installed, unplug/re-
 pair it or run `sudo udevadm trigger` once.
