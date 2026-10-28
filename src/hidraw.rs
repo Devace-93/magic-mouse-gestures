@@ -7,7 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// Magic Mouse 2 (Bluetooth and USB).
+/// Magic Mouse 2, including the 2024 USB-C model (product 0x0323), which
+/// the kernel driver treats as the same device.
 const MOUSE2_REPORT_ID: u8 = 0x12;
 /// Original Magic Mouse.
 const MOUSE_REPORT_ID: u8 = 0x29;
