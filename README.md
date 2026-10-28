@@ -242,7 +242,16 @@ journalctl --user -fu mousetouch
 ```
 
 - *No device found*: the mouse must be connected over **Bluetooth** (the
-  Lightning cable only charges on Linux) and bound to `hid-magicmouse`.
+  cable only charges on Linux) and bound to `hid-magicmouse`.
+- *Magic Mouse (USB-C, 2024) moves the pointer but has no gestures*: that
+  model (product `0323`) is supported by the in-tree driver from Linux 6.16.
+  If a DKMS `hid-magicmouse` (e.g. `4.18+magicmouse2`) is installed it shadows
+  the in-tree module and does not know the new id, so the kernel binds the
+  mouse to `hid-generic` (`journalctl -k | grep -i "magic mouse"` shows
+  `hid-generic` instead of `magicmouse`). Remove it: `sudo dkms remove
+  hid-magicmouse-dkms/4.18+magicmouse2 --all`, then `sudo depmod -a`,
+  `sudo modprobe -r hid_magicmouse; sudo modprobe hid_magicmouse`, and switch
+  the mouse off and on.
 - *The mouse no longer connects after being paired with a Mac* (even after
   forgetting it on both sides): BlueZ keeps a record that is *paired* but not
   *bonded* and rejects the mouse (`journalctl -u bluetooth` says "Rejected

@@ -2,6 +2,9 @@
 # and raw HID nodes, and create virtual devices through uinput.
 KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
 SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="*Magic Mouse*", TAG+="uaccess"
-# Raw HID reports carry the multitouch data (Bluetooth 0005 / USB 0003, Apple 004C, Magic Mouse 2 0269, Magic Mouse 030D).
-SUBSYSTEM=="hidraw", KERNELS=="000[35]:004C:0269.*", TAG+="uaccess"
-SUBSYSTEM=="hidraw", KERNELS=="000[35]:004C:030D.*", TAG+="uaccess"
+# Raw HID reports carry the multitouch data. Bus 0005 = Bluetooth (vendor
+# 004C), 0003 = USB (vendor 05AC); products: 030D Magic Mouse, 0269 Magic
+# Mouse 2, 0323 Magic Mouse 2 USB-C (2024).
+SUBSYSTEM=="hidraw", KERNELS=="000[35]:0[05][4A]C:0269.*", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNELS=="000[35]:0[05][4A]C:030D.*", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNELS=="000[35]:0[05][4A]C:0323.*", TAG+="uaccess"
