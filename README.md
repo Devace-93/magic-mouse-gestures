@@ -107,6 +107,23 @@ run `./purge.sh`.
 If the Magic Mouse was paired before the udev rule was installed, unplug/re-
 pair it or run `sudo udevadm trigger` once.
 
+### About DKMS drivers
+
+MouseTouch only needs the `hid-magicmouse` driver that ships inside the
+Linux kernel (5.15 or newer; the 2024 USB-C mouse needs 6.16 or newer).
+Third-party DKMS builds of that driver (`hid-magicmouse-dkms`,
+`magicmouse-hid`, ...) are recompiled on every kernel update and replace the
+built-in module. The common `4.18+magicmouse2` build reports every finger in
+slot 0 and does not know the USB-C model, so that mouse lands on
+`hid-generic` with no gestures at all. If you installed one for an older
+kernel, remove it and reconnect the mouse:
+
+```sh
+dkms status | grep -i magic                                   # is one installed?
+sudo dkms remove hid-magicmouse-dkms/4.18+magicmouse2 --all   # use the name/version printed
+sudo depmod -a && sudo modprobe -r hid_magicmouse; sudo modprobe hid_magicmouse
+```
+
 ## Configure
 
 Run **MouseTouch** from the app menu, or
@@ -139,11 +156,9 @@ taps say why (*moved too far*, *lifted while moving*, ...), which is the
 quickest way to tune the *Tap timing* values.
 
 The window-with-arrow button opens the same view in its own window with an
-event log, handy next to the app you are testing. Its pin button asks the
-desktop to keep that window on every workspace, so it stays put while
-workspaces slide past; this uses COSMIC's toplevel-management protocol and
-only works where the compositor advertises it (other desktops: use the
-window menu, e.g. GNOME *Always on Visible Workspace*, KDE *All Desktops*).
+event log, handy next to the app you are testing (use your desktop's window
+menu to keep it on every workspace: COSMIC *Sticky*, GNOME *Always on
+Visible Workspace*, KDE *All Desktops*).
 
 The data comes from the daemon's event stream on
 `$XDG_RUNTIME_DIR/mousetouch.sock` (newline-delimited JSON, see
@@ -240,7 +255,6 @@ mousetouch events         # the running daemon's event stream as JSON lines
 mousetouch demo-swipe left 40   # replay a synthetic 4-finger swipe
 mousetouch bt-check       # Bluetooth pairing healthy? (3 = stale after a Mac pairing)
 mousetouch bt-repair      # remove the mouse from BlueZ and pair it again
-mousetouch sticky list    # windows the compositor reports, and whether it can pin them
 journalctl --user -fu mousetouch
 ```
 
@@ -258,9 +272,8 @@ journalctl --user -fu mousetouch
 - *The mouse no longer connects after being paired with a Mac* (even after
   forgetting it on both sides): BlueZ keeps a record that is *paired* but not
   *bonded* and rejects the mouse (`journalctl -u bluetooth` says "Rejected
-  connection from !bonded device"). The settings app shows this as *Stale
-  pairing* in its Bluetooth row; press **Forget and pair again**, or run
-  `mousetouch bt-repair` and switch the mouse off and on when asked. It
+  connection from !bonded device"). Run `mousetouch bt-repair` and switch
+  the mouse off and on when asked. It
   removes the stale record, waits for the mouse, pairs, trusts and connects.
   `mousetouch bt-check` reports the state (exit 3 = stale).
 - *Swipe goes the wrong way*: flip **Direction**, or set *Desktop touchpad
@@ -286,9 +299,8 @@ cargo build --release
 Layout: `src/main.rs` (device discovery, event loop), `src/engine.rs`
 (gesture recognition), `src/hidraw.rs` (HID report decoding), `src/focus.rs`
 (focused-app tracking over Wayland), `src/virt.rs` (uinput devices),
-`src/monitor.rs` (event stream for the live view), `src/sticky.rs` (pin a
-window on every workspace, COSMIC), `src/bluetooth.rs` (pairing check and
-repair through bluetoothctl), `src/config.rs`, `ui/` (GTK4/libadwaita
+`src/monitor.rs` (event stream for the live view), `src/bluetooth.rs`
+(pairing check and repair through bluetoothctl), `src/config.rs`, `ui/` (GTK4/libadwaita
 settings with the live view), `packaging/` (systemd unit, udev rule, desktop
 file).
 
