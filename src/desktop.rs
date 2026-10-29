@@ -15,7 +15,15 @@ const DESKTOP_ID: &str = "io.github.Devace_93.MouseTouch";
 /// Install prefix of the running binary (`<prefix>/bin/mousetouch`), if the
 /// layout is the expected one.
 fn install_prefix() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
+    // Prefer the path we were started by: under `brew services` that is
+    // `<prefix>/opt/mousetouch/bin/mousetouch`, which survives upgrades,
+    // whereas /proc/self/exe resolves to `Cellar/mousetouch/<version>/...`
+    // and would leave a dangling entry after the next `brew upgrade`.
+    let argv0 = std::env::args_os().next().map(PathBuf::from).filter(|p| p.is_absolute() && p.is_file());
+    let exe = match argv0 {
+        Some(p) => p,
+        None => std::env::current_exe().ok()?,
+    };
     let bin = exe.parent()?;
     if bin.file_name()? != "bin" {
         return None;
