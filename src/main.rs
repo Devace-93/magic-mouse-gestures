@@ -15,7 +15,6 @@ mod focus;
 mod hidraw;
 mod monitor;
 mod scroll;
-mod sticky;
 mod virt;
 
 use anyhow::{Context, Result};
@@ -47,9 +46,6 @@ Commands:
                       Remove the mouse from BlueZ and pair it again (asks you
                       to switch it off and on). NAME = part of its Bluetooth
                       name, default the config's device_match
-  sticky APP_ID [TITLE] [on|off]
-                      Keep a window on every workspace (COSMIC only); used by the
-                      settings app for its live view. `sticky list` prints windows
   demo-swipe DIR [MM] Replay a synthetic swipe on the virtual touchpad
                       (DIR = left|right|up|down, MM = travel, default 40)
   print-config        Print the effective configuration as TOML
@@ -111,7 +107,6 @@ fn main() -> Result<()> {
                 bluetooth::repair(&name, Duration::from_secs(secs))
             }
         }
-        "sticky" => sticky_cmd(&rest),
         "demo-swipe" => demo_swipe(&rest),
         "fake-mouse" => fake_mouse(
             rest.first().map(String::as_str).unwrap_or("all"),
@@ -384,39 +379,6 @@ fn probe(config_path: &Path, watch: bool) -> Result<()> {
                 _ => {}
             }
         }
-    }
-}
-
-/// `sticky APP_ID [TITLE] [on|off]`. Exit status 2 when the compositor has no
-/// such request, so the settings app can tell "unsupported" from "no window".
-fn sticky_cmd(args: &[String]) -> Result<()> {
-    let app_id = args.first().context("sticky needs an app id (or `list`), e.g. io.github.Devace_93.MouseTouch")?;
-    if app_id == "list" {
-        return sticky::list();
-    }
-    let mut rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
-    let on = match rest.last() {
-        Some(&"off") => {
-            rest.pop();
-            false
-        }
-        Some(&"on") => {
-            rest.pop();
-            true
-        }
-        _ => true,
-    };
-    let title = rest.first().copied();
-    match sticky::set_sticky(app_id, title, on)? {
-        sticky::Outcome::Unsupported(why) => {
-            eprintln!("{why}");
-            std::process::exit(2);
-        }
-        sticky::Outcome::Changed(0) => anyhow::bail!(
-            "no window with app id {app_id}{} found",
-            title.map(|t| format!(" and title \"{t}\"")).unwrap_or_default()
-        ),
-        sticky::Outcome::Changed(_) => Ok(()),
     }
 }
 

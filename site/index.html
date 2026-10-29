@@ -351,6 +351,7 @@ cd mousetouch
             <li data-i18n="after3">Swipe left/right with two fingers. Done.</li>
           </ol>
           <div class="note" data-i18n-html="afterNote">Methods that do not run a package hook (tarball, Homebrew, cargo) print the one-off <code>systemctl --user enable --now mousetouch</code> step.</div>
+          <div class="note" data-i18n-html="dkmsNote"><strong>About DKMS drivers.</strong> MouseTouch only needs the <code>hid-magicmouse</code> driver that ships inside the Linux kernel (5.15 or newer; the 2024 USB-C mouse needs 6.16 or newer). Third-party DKMS builds of that driver (<code>hid-magicmouse-dkms</code>, <code>magicmouse-hid</code>, …) are recompiled on every kernel update and replace the built-in module. The common <code>4.18+magicmouse2</code> build reports every finger in slot 0 and does not know the USB-C model, so that mouse lands on <code>hid-generic</code> with no gestures at all. If you installed one for an older kernel, remove it (<code>sudo dkms remove hid-magicmouse-dkms/4.18+magicmouse2 --all &amp;&amp; sudo depmod -a</code>) and reconnect the mouse.</div>
         </div>
       </div>
     </div>
