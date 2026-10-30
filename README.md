@@ -307,6 +307,9 @@ file).
 To exercise the daemon without hardware: `mousetouch fake-mouse all` creates
 a fake Magic Mouse over uinput and plays a swipe, a pinch and a double tap
 through it (`MOUSETOUCH_FAKE_NAME` renames it so only a test config matches).
+`tools/magicmouse-emu.py` does the same without building the project and
+also emulates scrolling, custom device names and IDs; `tools/VM-TESTING.md`
+is the checklist for trying a release on other distros in VMs.
 
 ## Related work
 
